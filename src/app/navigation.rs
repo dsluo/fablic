@@ -86,10 +86,7 @@ impl App {
             _ => None,
         };
         match next {
-            Some(q) => {
-                self.flash(Level::Info, format!("↳ {}", q.scope.label()));
-                self.push_query(q);
-            }
+            Some(q) => self.push_query(q),
             None if self.kind() == Kind::OneLake => self.preview(),
             None => self.describe(),
         }

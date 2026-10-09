@@ -65,27 +65,50 @@ fn draw_prompt(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             Span::styled("/", Style::new().fg(t.accent)),
             Span::styled(app.input.clone(), Style::new().fg(t.text)),
         ]),
-        _ => {
-            // Breadcrumbs: every frame on the stack, then the current one.
-            let mut spans = Vec::new();
-            let frames = app.stack.iter().chain(std::iter::once(&app.frame));
-            for (i, fr) in frames.enumerate() {
-                if i > 0 {
-                    spans.push(Span::styled(" › ", Style::new().fg(t.faint)));
-                }
-                spans.push(Span::styled(fr.query.kind.name(), Style::new().fg(t.dim)));
-            }
-            if let Some(last) = spans.last_mut() {
-                last.style = Style::new().fg(t.title).add_modifier(Modifier::BOLD);
-            }
-            Line::from(spans)
-        }
+        _ => breadcrumb(app, area.width as usize, t),
     };
     f.render_widget(Paragraph::new(line), area);
     if matches!(app.mode, Mode::Command | Mode::Filter) {
         let x = area.x + 1 + app.input.chars().count() as u16;
         f.set_cursor_position((x.min(area.right().saturating_sub(1)), area.y));
     }
+}
+
+/// Where the view is: `Urban1 Bronze › ingest › load_all (Notebook)`. Leading segments give way to `…` when it's too wide.
+fn breadcrumb(app: &App, width: usize, t: &Theme) -> Line<'static> {
+    const SEP: &str = " › ";
+    let mut parts = app.frame.query.scope.parts();
+    if parts.is_empty() {
+        parts.push("all".into());
+    }
+    let len = |ps: &[String]| {
+        ps.iter().map(|p| p.chars().count()).sum::<usize>()
+            + SEP.chars().count() * ps.len().saturating_sub(1)
+    };
+    let mut skip = 0;
+    while skip + 1 < parts.len()
+        && len(&parts[skip..]) + if skip > 0 { 1 + SEP.chars().count() } else { 0 } > width
+    {
+        skip += 1;
+    }
+    let mut spans = Vec::new();
+    if skip > 0 {
+        spans.push(Span::styled("…", Style::new().fg(t.faint)));
+        spans.push(Span::styled(SEP, Style::new().fg(t.faint)));
+    }
+    let last = parts.len() - 1;
+    for (i, p) in parts.into_iter().enumerate().skip(skip) {
+        if i > skip {
+            spans.push(Span::styled(SEP, Style::new().fg(t.faint)));
+        }
+        let style = if i == last {
+            Style::new().fg(t.title).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(t.dim)
+        };
+        spans.push(Span::styled(p, style));
+    }
+    Line::from(spans)
 }
 
 fn draw_status(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
@@ -358,5 +381,22 @@ mod tests {
         let mut app = fake_app();
         type_str(&mut app, ":no");
         insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn breadcrumb_drops_leading_segments_when_narrow() {
+        let mut app = fake_app();
+        let keys = [
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Enter,
+        ];
+        steps(&mut app, &keys);
+        let text = |w| breadcrumb(&app, w, &Theme::MOCHA).to_string();
+        assert_eq!(text(80), "Urban1 Bronze › bronze_lh (Lakehouse) › Files");
+        assert_eq!(text(34), "… › bronze_lh (Lakehouse) › Files");
+        assert_eq!(text(10), "… › Files");
     }
 }

@@ -33,7 +33,8 @@ pub struct Scope {
 }
 
 impl Scope {
-    pub fn label(&self) -> String {
+    /// Workspace, folders, item and OneLake path, outermost first.
+    pub fn parts(&self) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some(ws) = &self.workspace {
             parts.push(ws.name.clone());
@@ -47,6 +48,11 @@ impl Scope {
         if let Some(p) = &self.path {
             parts.extend(p.split('/').map(str::to_owned));
         }
+        parts
+    }
+
+    pub fn label(&self) -> String {
+        let parts = self.parts();
         if parts.is_empty() {
             "all".into()
         } else {

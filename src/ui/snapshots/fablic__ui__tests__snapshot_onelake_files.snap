@@ -22,5 +22,5 @@ expression: render(&mut app)
 "│                                                                                                            │"
 "│                                                                                                            │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
-"workspaces › items › onelake › onelake                                                                        "
-"↳ Urban1 Bronze › bronze_lh (Lakehouse) › Files                                                               "
+"Urban1 Bronze › bronze_lh (Lakehouse) › Files                                                                 "
+"? help  :q quit                                                                                               "
