@@ -1,0 +1,20 @@
+[tools]
+rust = { version = "1.99", components = "clippy,rustfmt" }
+cargo-insta = "latest"
+"github:nextest-rs/nextest" = { version = "latest", version_prefix = "cargo-nextest-", bin = "cargo-nextest" }
+
+[tasks.dev]
+description = "Run fablic"
+run = "cargo run --"
+
+[tasks.test]
+description = "Run the test suite"
+run = "cargo nextest run"
+
+[tasks.lint]
+description = "Clippy and rustfmt check"
+run = ["cargo clippy --all-targets -- -D warnings", "cargo fmt --check"]
+
+[tasks.snap]
+description = "Review pending insta snapshots"
+run = "cargo insta review"
