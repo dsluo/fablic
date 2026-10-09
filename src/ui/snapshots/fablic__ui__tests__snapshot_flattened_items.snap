@@ -3,11 +3,11 @@ source: src/ui/mod.rs
 expression: render(&mut app)
 ---
 "╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│Profile   fake                          <enter> open      <o> open                        ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
-"│Account   me@example.com                <y> definition    <:> command                     ├┤ ├─┤├┴┐│  ││    │"
-"│Scope     Urban1 Bronze                 <r> run           </> filter                      └  ┴ ┴└─┘┴─┘┴└─┘  │"
-"│Resource  items                         <s> schedules     <?> help                                          │"
-"│Count     5                             <F> flatten       <d> describe                                      │"
+"│Profile    fake                         <enter> open      <o> open                        ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
+"│Account    me@example.com               <y> definition    <:> command                     ├┤ ├─┤├┴┐│  ││    │"
+"│Workspace  Urban1 Bronze                <r> run           </> filter                      └  ┴ ┴└─┘┴─┘┴└─┘  │"
+"│Resource   items                        <s> schedules     <?> help                                          │"
+"│Count      5                            <F> flatten       <d> describe                                      │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭───────────────────────────────────────── items(Urban1 Bronze)[5] ──────────────────────────────────────────╮"
 "│NAME              TYPE           FOLDER        DESCRIPTION           ID                                     │"

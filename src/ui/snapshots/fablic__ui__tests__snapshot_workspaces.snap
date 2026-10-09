@@ -3,11 +3,11 @@ source: src/ui/mod.rs
 expression: render(&mut app)
 ---
 "╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│Profile   fake                          <enter> items     <d> describe                    ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
-"│Account   me@example.com                <o> open          <esc> back                      ├┤ ├─┤├┴┐│  ││    │"
-"│Scope     all                           <:> command       <ctrl-p> profile                └  ┴ ┴└─┘┴─┘┴└─┘  │"
-"│Resource  workspaces                    </> filter        <ctrl-r> refresh                                  │"
-"│Count     3                             <?> help                                                            │"
+"│Profile    fake                         <enter> items     <d> describe                    ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
+"│Account    me@example.com               <o> open          <esc> back                      ├┤ ├─┤├┴┐│  ││    │"
+"│Workspace  all                          <:> command       <ctrl-p> profile                └  ┴ ┴└─┘┴─┘┴└─┘  │"
+"│Resource   workspaces                   </> filter        <ctrl-r> refresh                                  │"
+"│Count      3                            <?> help                                                            │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭──────────────────────────────────────────── workspaces(all)[3] ────────────────────────────────────────────╮"
 "│NAME           TYPE       CAPACITY   ID                                                                     │"

@@ -54,6 +54,14 @@ pub fn hints(kind: Kind) -> Vec<(&'static str, &'static str)> {
     specific.iter().copied().chain(global).collect()
 }
 
+/// The header names only the workspace; the table title shows the full path.
+fn workspace(app: &App) -> String {
+    match &app.frame.query.scope.workspace {
+        Some(ws) => ws.name.clone(),
+        None => "all".into(),
+    }
+}
+
 pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     if app.compact {
         return draw_compact(f, area, app, t);
@@ -65,14 +73,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     f.render_widget(block, area);
 
     // Wide enough for the longest value, but leave at least half for hints and logo.
-    let longest = [
-        app.frame.query.scope.label().chars().count(),
-        app.profile.account.len(),
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(0) as u16;
-    let info_w = (longest + 12).clamp(40, inner.width / 2);
+    let longest = [workspace(app).chars().count(), app.profile.account.len()]
+        .into_iter()
+        .max()
+        .unwrap_or(0) as u16;
+    let info_w = (longest + 13).clamp(40, inner.width / 2);
     // The logo goes first when space is short: hints matter more.
     let logo_w = if inner.width.saturating_sub(info_w + LOGO_W) >= 2 * HINT_W {
         LOGO_W
@@ -86,7 +91,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     ])
     .areas(inner);
 
-    let label = |k: &str| Span::styled(format!("{k:<10}"), Style::new().fg(t.dim));
+    let label = |k: &str| Span::styled(format!("{k:<11}"), Style::new().fg(t.dim));
     let value = |v: String| Span::styled(v, Style::new().fg(t.text));
     let mut profile = vec![
         label("Profile"),
@@ -113,7 +118,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let lines = vec![
         Line::from(profile),
         Line::from(vec![label("Account"), value(app.profile.account.clone())]),
-        Line::from(vec![label("Scope"), value(q.scope.label())]),
+        Line::from(vec![label("Workspace"), value(workspace(app))]),
         Line::from(vec![label("Resource"), value(resource)]),
         Line::from(vec![label("Count"), value(count)]),
     ];
@@ -155,10 +160,7 @@ fn draw_compact(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 .fg(app.profile.color.unwrap_or(t.accent))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("  {}", app.frame.query.scope.label()),
-            Style::new().fg(t.text),
-        ),
+        Span::styled(format!("  {}", workspace(app)), Style::new().fg(t.text)),
     ];
     if app.profile.readonly {
         spans.push(Span::styled("  [read-only]", Style::new().fg(t.bad)));
