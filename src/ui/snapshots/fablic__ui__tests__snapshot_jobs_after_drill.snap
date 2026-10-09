@@ -1,0 +1,26 @@
+---
+source: src/ui/mod.rs
+expression: render(&mut app)
+---
+"╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│Profile   fake                                    <:> command       <?> help              ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
+"│Account   me@example.com                          </> filter                              ├┤ ├─┤├┴┐│  ││    │"
+"│Scope     Urban1 Bronze › ingest_shop (Notebook)  <d> describe                            └  ┴ ┴└─┘┴─┘┴└─┘  │"
+"│Resource  jobs                                    <esc> back                                                │"
+"│Count     3                                       <ctrl-r> refresh                                          │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"╭───────────────────────────── jobs(Urban1 Bronze › ingest_shop (Notebook))[3] ──────────────────────────────╮"
+"│ID     STATUS      JOB TYPE     INVOKED BY  START             DURATION                                      │"
+"│job-3  InProgress  RunNotebook  Scheduled   2026-10-09 13:02  4m                                            │"
+"│job-2  Failed      RunNotebook  Scheduled   2026-10-09 01:00  12m                                           │"
+"│job-1  Completed   RunNotebook  Scheduled   2026-10-08 01:00  9m                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"workspaces › items › jobs                                                                                     "
+"↳ Urban1 Bronze › ingest_shop (Notebook)                                                                      "

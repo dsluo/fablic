@@ -1,0 +1,26 @@
+---
+source: src/ui/mod.rs
+expression: render(&mut app)
+---
+"╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│Profile   fake                          <enter> items     <ctrl-r> refresh                ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
+"│Account   me@example.com                <:> command       <?> help                        ├┤ ├─┤├┴┐│  ││    │"
+"│Scope     all                           </> filter                                        └  ┴ ┴└─┘┴─┘┴└─┘  │"
+"│Resource  workspaces                    <d> describe                                                        │"
+"│Count     3                             <esc> back                                                          │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"╭──────────────────────────────────────────── workspaces(all)[3] ────────────────────────────────────────────╮"
+"│NAME           TYPE       CAPACITY   ID                                                                     │"
+"│Urban1 Bronze  Workspace  cap-f64    ws-1                                                                   │"
+"│Urban2 Silver  Workspace  cap-f64    ws-2                                                                   │"
+"│Sandbox        Workspace  cap-trial  ws-3                                                                   │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"workspaces                                                                                                    "
+"? help  :q quit                                                                                               "
