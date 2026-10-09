@@ -1,18 +1,21 @@
 //! App state and input handling. Pure: it never does I/O itself, it queues
 //! `Effect`s that the event loop carries out and answers with `Msg`s.
 
+mod actions;
 mod command;
 mod navigation;
+mod profiles;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Color;
 use ratatui::widgets::TableState;
 
 use crate::filter::Filter;
 use crate::resources::{Health, Kind, Row};
-use crate::source::{Query, Scope};
+use crate::source::{Part, Query, Scope};
 
 pub use command::Suggestion;
 
@@ -23,6 +26,7 @@ pub enum Mode {
     Filter,
     Detail,
     Help,
+    Profiles,
 }
 
 /// One table view: what is listed, how it is filtered, and where the cursor was.
@@ -33,9 +37,23 @@ pub struct Frame {
     pub selected: usize,
 }
 
+/// Work for the event loop. `profile` names the source to use.
 #[derive(Debug)]
 pub enum Effect {
-    Fetch { generation: u64, query: Query },
+    Fetch {
+        profile: String,
+        generation: u64,
+        query: Query,
+        /// Bypass caches in the source (explicit refresh, live views).
+        force: bool,
+    },
+    Definition {
+        profile: String,
+        workspace: String,
+        item: String,
+        title: String,
+    },
+    Open(String),
 }
 
 #[derive(Debug)]
@@ -43,6 +61,10 @@ pub enum Msg {
     Rows {
         generation: u64,
         result: Result<Vec<Row>, String>,
+    },
+    Detail {
+        title: String,
+        result: Result<Vec<Part>, String>,
     },
 }
 
@@ -72,6 +94,7 @@ pub struct ProfileInfo {
     pub name: String,
     pub account: String,
     pub readonly: bool,
+    pub color: Option<Color>,
 }
 
 /// How often a jobs view with active runs refreshes itself.
@@ -92,7 +115,12 @@ pub struct App {
     pub status: Option<Status>,
     pub loading: bool,
     pub error: Option<String>,
+    /// The active profile; a copy of `profiles[active]`.
     pub profile: ProfileInfo,
+    pub profiles: Vec<ProfileInfo>,
+    pub active: usize,
+    /// Highlighted entry in the profile picker.
+    pub picker: usize,
     pub compact: bool,
     pub quit: bool,
     /// Rows of the body area at the last draw, for page up/down.
@@ -104,16 +132,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(profile: ProfileInfo) -> App {
-        let query = Query {
-            kind: Kind::Workspaces,
-            scope: Scope::default(),
-            item_type: None,
-        };
+    pub fn new(profiles: Vec<ProfileInfo>, active: usize) -> App {
         let mut app = App {
             mode: Mode::Table,
             frame: Frame {
-                query,
+                query: Query::new(Kind::Workspaces, Scope::default()),
                 filter: String::new(),
                 selected: 0,
             },
@@ -128,7 +151,10 @@ impl App {
             status: None,
             loading: false,
             error: None,
-            profile,
+            profile: profiles[active].clone(),
+            profiles,
+            active,
+            picker: active,
             compact: false,
             quit: false,
             page: 20,
@@ -176,17 +202,19 @@ impl App {
                 self.table.select(None);
             }
         }
-        self.refresh();
+        self.refresh(false);
     }
 
-    pub fn refresh(&mut self) {
+    pub fn refresh(&mut self, force: bool) {
         self.generation += 1;
         self.loading = true;
         self.error = None;
         self.fetched_at = Some(Instant::now());
         self.effects.push(Effect::Fetch {
+            profile: self.profile.name.clone(),
             generation: self.generation,
             query: self.frame.query.clone(),
+            force,
         });
     }
 
@@ -207,6 +235,23 @@ impl App {
                     Err(e) => self.error = Some(e),
                 }
             }
+            Msg::Detail { title, result } => {
+                if self.mode != Mode::Detail || self.detail.title != title {
+                    return;
+                }
+                self.detail.lines = match result {
+                    Ok(parts) => parts
+                        .into_iter()
+                        .flat_map(|p| {
+                            let mut lines = vec![format!("── {} ──", p.path)];
+                            lines.extend(p.text.lines().map(str::to_owned));
+                            lines.push(String::new());
+                            lines
+                        })
+                        .collect(),
+                    Err(e) => vec![format!("error: {e}")],
+                };
+            }
         }
     }
 
@@ -215,7 +260,7 @@ impl App {
             self.kind() == Kind::Jobs && self.rows.iter().any(|r| r.health == Health::Pending);
         let due = self.fetched_at.is_none_or(|t| t.elapsed() >= LIVE_REFRESH);
         if live && due && !self.loading && self.mode == Mode::Table {
-            self.refresh();
+            self.refresh(true);
         }
     }
 
@@ -257,6 +302,7 @@ impl App {
             Mode::Filter => self.key_filter(key),
             Mode::Detail => self.key_detail(key, ctrl),
             Mode::Help => self.mode = Mode::Table,
+            Mode::Profiles => self.key_profiles(key),
         }
     }
 
@@ -278,8 +324,12 @@ impl App {
                 self.mode = Mode::Filter;
             }
             (KeyCode::Char('d'), false) => self.describe(),
+            (KeyCode::Char('y'), false) => self.definition(),
+            (KeyCode::Char('o'), false) => self.open_in_browser(),
+            (KeyCode::Char('F'), false) => self.toggle_flat(),
+            (KeyCode::Char('p'), true) => self.open_profiles(),
             (KeyCode::Char('r'), true) => {
-                self.refresh();
+                self.refresh(true);
                 self.flash(Level::Info, "refreshing");
             }
             (KeyCode::Char('e'), true) => self.compact = !self.compact,
@@ -359,18 +409,21 @@ impl App {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::source::{DataSource, FakeSource};
+    use crate::fabric::fake::FakeSource;
+    use crate::source::DataSource;
 
     pub fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
     pub fn fake_app() -> App {
-        let mut app = App::new(ProfileInfo {
+        let profile = ProfileInfo {
             name: "fake".into(),
             account: "me@example.com".into(),
             readonly: false,
-        });
+            color: None,
+        };
+        let mut app = App::new(vec![profile], 0);
         settle(&mut app);
         app
     }
@@ -386,11 +439,28 @@ pub(crate) mod tests {
                 break;
             }
             for e in effects {
-                let Effect::Fetch { generation, query } = e;
-                let result = rt
-                    .block_on(FakeSource.fetch(query))
-                    .map_err(|e| e.to_string());
-                app.on_msg(Msg::Rows { generation, result });
+                match e {
+                    Effect::Fetch {
+                        generation, query, ..
+                    } => {
+                        let result = rt
+                            .block_on(FakeSource.fetch(query, false))
+                            .map_err(|e| e.to_string());
+                        app.on_msg(Msg::Rows { generation, result });
+                    }
+                    Effect::Definition {
+                        workspace,
+                        item,
+                        title,
+                        ..
+                    } => {
+                        let result = rt
+                            .block_on(FakeSource.definition(workspace, item))
+                            .map_err(|e| e.to_string());
+                        app.on_msg(Msg::Detail { title, result });
+                    }
+                    Effect::Open(_) => {}
+                }
             }
         }
     }
@@ -425,9 +495,9 @@ pub(crate) mod tests {
     #[test]
     fn stale_responses_are_dropped() {
         let mut app = fake_app();
-        app.refresh();
+        app.refresh(false);
         let old = app.generation;
-        app.refresh();
+        app.refresh(false);
         app.on_msg(Msg::Rows {
             generation: old,
             result: Ok(Vec::new()),
@@ -444,7 +514,7 @@ pub(crate) mod tests {
             app.detail
                 .lines
                 .iter()
-                .any(|l| l.contains("displayName: Urban1 Bronze"))
+                .any(|l| l.contains("displayName: Sandbox"))
         );
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Table);

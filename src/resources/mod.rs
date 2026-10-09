@@ -2,6 +2,8 @@
 
 use serde_json::Value;
 
+use crate::source::Query;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     Workspaces,
@@ -84,6 +86,17 @@ impl Kind {
             Kind::Connections => &["NAME", "TYPE", "CONNECTIVITY", "PRIVACY", "ID"],
             Kind::Gateways => &["NAME", "TYPE", "MEMBERS", "VERSION", "ID"],
             Kind::Domains => &["NAME", "DESCRIPTION", "PARENT", "ID"],
+        }
+    }
+
+    /// Columns for a query; item lists gain folder and workspace columns when flat.
+    pub fn columns_for(q: &Query) -> &'static [&'static str] {
+        match q.kind {
+            Kind::Items if q.scope.workspace.is_none() => {
+                &["NAME", "TYPE", "WORKSPACE", "FOLDER", "ID"]
+            }
+            Kind::Items if q.is_flat() => &["NAME", "TYPE", "FOLDER", "DESCRIPTION", "ID"],
+            k => k.columns(),
         }
     }
 
@@ -202,6 +215,8 @@ pub struct Row {
     pub name: String,
     pub cells: Vec<String>,
     pub health: Health,
+    /// A container (workspace folder, OneLake directory) that Enter opens.
+    pub dir: bool,
     /// The API object the row was built from, shown by describe.
     pub raw: Value,
 }
@@ -213,8 +228,14 @@ impl Row {
             name: name.into(),
             cells,
             health: Health::Neutral,
+            dir: false,
             raw: Value::Null,
         }
+    }
+
+    pub fn dir(mut self) -> Row {
+        self.dir = true;
+        self
     }
 
     pub fn health(mut self, h: Health) -> Row {

@@ -1,69 +1,133 @@
 mod app;
+mod auth;
+mod config;
+mod fabric;
 mod filter;
 mod resources;
 mod source;
 mod theme;
 mod ui;
 
+use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use ratatui::backend::TestBackend;
+use ratatui::style::Color;
 use ratatui::{DefaultTerminal, Terminal};
 use tokio::sync::mpsc;
 
 use app::{App, Effect, Msg, ProfileInfo};
-use source::{FakeSource, SharedSource};
+use auth::AzCli;
+use config::Config;
+use fabric::FabricSource;
+use fabric::fake::FakeSource;
+use source::SharedSource;
 use theme::Theme;
 
 /// A k9s-style terminal UI for Microsoft Fabric.
 #[derive(Parser, Debug)]
 #[command(version)]
 struct Args {
+    /// Profile to start on (name or az account). Defaults to `default_profile`.
+    #[arg(short, long)]
+    profile: Option<String>,
+
+    /// Block every write, whatever the profile says.
+    #[arg(long)]
+    readonly: bool,
+
     /// Use built-in fake data instead of Fabric.
     #[arg(long)]
     fake: bool,
 
     /// Render one frame to stdout after replaying these steps, then exit.
-    /// Steps are space separated: `:cmd`, `/filter`, or a key (enter esc j k g G d).
+    /// Steps are space separated: `:cmd`, `/filter`, or a key (enter esc j k g G d y F).
+    /// Quote a command with arguments: `':nb all'`.
     #[arg(long, value_name = "STEPS", allow_hyphen_values = true)]
     snapshot: Option<String>,
 }
+
+type Sources = Arc<HashMap<String, SharedSource>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     init_logging();
 
-    let source: SharedSource = Arc::new(FakeSource);
-    let profile = ProfileInfo {
-        name: "fake".into(),
-        account: "fake data".into(),
-        readonly: true,
+    let (profiles, active, sources) = if args.fake {
+        let p = ProfileInfo {
+            name: "fake".into(),
+            account: "fake data".into(),
+            readonly: true,
+            color: None,
+        };
+        let src: SharedSource = Arc::new(FakeSource);
+        (vec![p], 0, HashMap::from([("fake".to_owned(), src)]))
+    } else {
+        live_profiles(&args).await?
     };
-    let app = App::new(profile);
+    let sources: Sources = Arc::new(sources);
+    let app = App::new(profiles, active);
 
     if let Some(steps) = args.snapshot {
-        return snapshot(app, source, &steps).await;
+        return snapshot(app, sources, &steps).await;
+    }
+
+    // Get every profile's token in the background so switching is instant.
+    for (name, src) in sources.iter() {
+        let (name, fut) = (name.clone(), src.warm());
+        tokio::spawn(async move {
+            if let Err(e) = fut.await {
+                tracing::warn!(profile = %name, "token prefetch failed: {e:#}");
+            }
+        });
     }
 
     let theme = Theme::detect();
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, app, source, theme).await;
+    let result = run(&mut terminal, app, sources, theme).await;
     ratatui::restore();
     result
 }
 
+async fn live_profiles(
+    args: &Args,
+) -> Result<(Vec<ProfileInfo>, usize, HashMap<String, SharedSource>)> {
+    let mut config = Config::load(Config::path().as_deref())?;
+    if config.profiles.is_empty() {
+        let accounts = AzCli::accounts()
+            .await
+            .context("listing az accounts for default profiles")?;
+        config = config.with_az_accounts(accounts);
+    }
+    let active = config.initial(args.profile.as_deref())?;
+    let mut sources = HashMap::new();
+    let mut profiles = Vec::new();
+    for p in config.profiles {
+        let tokens = Arc::new(AzCli::new(&p.account));
+        let src: SharedSource = Arc::new(FabricSource::new(tokens));
+        sources.insert(p.name.clone(), src);
+        profiles.push(ProfileInfo {
+            color: p.color.as_deref().and_then(|c| Color::from_str(c).ok()),
+            readonly: p.readonly || args.readonly,
+            name: p.name,
+            account: p.account,
+        });
+    }
+    Ok((profiles, active, sources))
+}
+
 fn init_logging() {
-    let Some(dirs) = directories::ProjectDirs::from("", "", "fablic") else {
+    let Some(dir) = config::state_dir() else {
         return;
     };
-    let dir = dirs.state_dir().unwrap_or(dirs.cache_dir());
-    if std::fs::create_dir_all(dir).is_err() {
+    if std::fs::create_dir_all(&dir).is_err() {
         return;
     }
     let file = tracing_appender::rolling::never(dir, "fablic.log");
@@ -77,17 +141,47 @@ fn init_logging() {
         .try_init();
 }
 
-fn spawn_effects(app: &mut App, source: &SharedSource, tx: &mpsc::UnboundedSender<Msg>) {
-    for effect in app.take_effects() {
-        match effect {
-            Effect::Fetch { generation, query } => {
-                let fut = source.fetch(query);
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    let result = fut.await.map_err(|e| format!("{e:#}"));
-                    let _ = tx.send(Msg::Rows { generation, result });
-                });
+/// Carry out one effect. Returns the message to feed back into the app, if any.
+async fn perform(effect: Effect, sources: Sources, open_urls: bool) -> Option<Msg> {
+    let source = |name: &str| {
+        sources
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("no source for profile {name}"))
+    };
+    match effect {
+        Effect::Fetch {
+            profile,
+            generation,
+            query,
+            force,
+        } => {
+            let result = match source(&profile) {
+                Ok(s) => s.fetch(query, force).await.map_err(|e| format!("{e:#}")),
+                Err(e) => Err(e),
+            };
+            Some(Msg::Rows { generation, result })
+        }
+        Effect::Definition {
+            profile,
+            workspace,
+            item,
+            title,
+        } => {
+            let result = match source(&profile) {
+                Ok(s) => s
+                    .definition(workspace, item)
+                    .await
+                    .map_err(|e| format!("{e:#}")),
+                Err(e) => Err(e),
+            };
+            Some(Msg::Detail { title, result })
+        }
+        Effect::Open(url) => {
+            if open_urls && let Err(e) = open::that_detached(&url) {
+                tracing::warn!("opening {url}: {e}");
             }
+            None
         }
     }
 }
@@ -95,14 +189,21 @@ fn spawn_effects(app: &mut App, source: &SharedSource, tx: &mpsc::UnboundedSende
 async fn run(
     terminal: &mut DefaultTerminal,
     mut app: App,
-    source: SharedSource,
+    sources: Sources,
     theme: Theme,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
-        spawn_effects(&mut app, &source, &tx);
+        for effect in app.take_effects() {
+            let (tx, sources) = (tx.clone(), sources.clone());
+            tokio::spawn(async move {
+                if let Some(msg) = perform(effect, sources, true).await {
+                    let _ = tx.send(msg);
+                }
+            });
+        }
         terminal.draw(|f| ui::draw(f, &mut app, &theme))?;
         if app.quit {
             return Ok(());
@@ -120,26 +221,48 @@ async fn run(
     }
 }
 
+/// Split snapshot steps on spaces, keeping single-quoted steps together.
+fn split_steps(steps: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quoted = false;
+    for c in steps.chars() {
+        match c {
+            '\'' => quoted = !quoted,
+            ' ' if !quoted => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            c => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Headless mode: replay steps, wait for every fetch, print one rendered frame.
-async fn snapshot(mut app: App, source: SharedSource, steps: &str) -> Result<()> {
-    async fn settle(app: &mut App, source: &SharedSource) {
+async fn snapshot(mut app: App, sources: Sources, steps: &str) -> Result<()> {
+    async fn settle(app: &mut App, sources: &Sources) {
         loop {
             let effects = app.take_effects();
             if effects.is_empty() {
                 return;
             }
             for e in effects {
-                let Effect::Fetch { generation, query } = e;
-                let result = source.fetch(query).await.map_err(|e| format!("{e:#}"));
-                app.on_msg(Msg::Rows { generation, result });
+                if let Some(msg) = perform(e, sources.clone(), false).await {
+                    app.on_msg(msg);
+                }
             }
         }
     }
     let press = |app: &mut App, code| app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
 
-    settle(&mut app, &source).await;
-    for step in steps.split_whitespace() {
-        match step {
+    settle(&mut app, &sources).await;
+    for step in split_steps(steps) {
+        match step.as_str() {
             "enter" => press(&mut app, KeyCode::Enter),
             "esc" => press(&mut app, KeyCode::Esc),
             s if s.starts_with(':') || s.starts_with('/') => {
@@ -149,11 +272,11 @@ async fn snapshot(mut app: App, source: SharedSource, steps: &str) -> Result<()>
                 press(&mut app, KeyCode::Enter);
             }
             s if s.chars().count() == 1 => {
-                press(&mut app, KeyCode::Char(s.chars().next().unwrap()))
+                press(&mut app, KeyCode::Char(s.chars().next().unwrap_or(' ')))
             }
             s => anyhow::bail!("unknown snapshot step: {s}"),
         }
-        settle(&mut app, &source).await;
+        settle(&mut app, &sources).await;
     }
     let mut term = Terminal::new(TestBackend::new(120, 30))?;
     term.draw(|f| ui::draw(f, &mut app, &Theme::MOCHA))?;
@@ -163,4 +286,15 @@ async fn snapshot(mut app: App, source: SharedSource, steps: &str) -> Result<()>
         println!("{}", line.trim_end());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn steps_keep_quoted_commands_together() {
+        assert_eq!(
+            super::split_steps("j ':nb all' enter"),
+            ["j", ":nb all", "enter"]
+        );
+    }
 }

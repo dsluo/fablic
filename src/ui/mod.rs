@@ -41,6 +41,7 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
     match app.mode {
         Mode::Command => draw_palette(f, body, app, theme),
         Mode::Help => draw_help(f, body, theme),
+        Mode::Profiles => draw_profiles(f, body, app, theme),
         _ => {}
     }
 }
@@ -138,11 +139,16 @@ fn draw_palette(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
 }
 
 pub const HELP: &[(&str, &str)] = &[
-    (":", "command palette (kinds, :q)"),
+    (":", "command palette (kinds, :ctx, :q)"),
+    (":nb all", "a kind across every workspace"),
     ("/", "filter: text, a|b, /re/, ~fuzzy, !invert"),
     ("enter", "drill in / open"),
     ("esc", "clear filter, then go back"),
     ("d", "describe (raw object as YAML)"),
+    ("y", "item definition (notebook source, ...)"),
+    ("F", "flatten folders: every item below"),
+    ("o", "open in the Fabric portal"),
+    ("ctrl-p", "switch profile (identity)"),
     ("j k g G", "move, top, bottom"),
     ("ctrl-f ctrl-b", "page down / up"),
     ("ctrl-r", "refresh"),
@@ -175,6 +181,45 @@ fn draw_help(f: &mut Frame, body: Rect, t: &Theme) {
     );
 }
 
+fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
+    let h = (app.profiles.len() as u16 + 2).min(body.height);
+    let w = 64.min(body.width);
+    let area = Rect::new(
+        body.x + (body.width - w) / 2,
+        body.y + (body.height - h) / 2,
+        w,
+        h,
+    );
+    let items: Vec<ListItem> = app
+        .profiles
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let base = if i == app.picker {
+                Style::new().bg(t.select_bg)
+            } else {
+                Style::new()
+            };
+            let mark = if i == app.active { "● " } else { "  " };
+            let mut spans = vec![
+                Span::styled(mark, base.fg(t.ok)),
+                Span::styled(
+                    format!("{:<16}", p.name),
+                    base.fg(p.color.unwrap_or(t.accent))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(p.account.clone(), base.fg(t.text)),
+            ];
+            if p.readonly {
+                spans.push(Span::styled(" [read-only]", base.fg(t.bad)));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+    f.render_widget(Clear, area);
+    f.render_widget(List::new(items).block(overlay_block(" profiles ", t)), area);
+}
+
 fn overlay_block<'a>(title: &'a str, t: &Theme) -> Block<'a> {
     Block::bordered()
         .border_type(BorderType::Rounded)
@@ -202,13 +247,44 @@ mod tests {
         insta::assert_snapshot!(render(&mut app));
     }
 
+    fn steps(app: &mut App, keys: &[KeyCode]) {
+        for k in keys {
+            app.on_key(key(*k));
+            settle(app);
+        }
+    }
+
+    #[test]
+    fn snapshot_folder_level() {
+        let mut app = fake_app();
+        steps(
+            &mut app,
+            &[KeyCode::Char('j'), KeyCode::Enter, KeyCode::Enter],
+        );
+        insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn snapshot_flattened_items() {
+        let mut app = fake_app();
+        steps(
+            &mut app,
+            &[KeyCode::Char('j'), KeyCode::Enter, KeyCode::Char('F')],
+        );
+        insta::assert_snapshot!(render(&mut app));
+    }
+
     #[test]
     fn snapshot_jobs_after_drill() {
         let mut app = fake_app();
-        app.on_key(key(KeyCode::Enter));
-        settle(&mut app);
-        app.on_key(key(KeyCode::Enter));
-        settle(&mut app);
+        let keys = [
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Enter,
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+        ];
+        steps(&mut app, &keys);
         insta::assert_snapshot!(render(&mut app));
     }
 

@@ -1,0 +1,26 @@
+---
+source: src/ui/mod.rs
+expression: render(&mut app)
+---
+"╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│Profile   fake                          <enter> open      </> filter                      ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
+"│Account   me@example.com                <y> definition    <d> describe                    ├┤ ├─┤├┴┐│  ││    │"
+"│Scope     Urban1 Bronze › ingest        <F> flatten       <esc> back                      └  ┴ ┴└─┘┴─┘┴└─┘  │"
+"│Resource  items                         <o> open          <ctrl-p> profile                                  │"
+"│Count     2                             <:> command       <ctrl-r> refresh                                  │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"╭───────────────────────────────────── items(Urban1 Bronze › ingest)[2] ─────────────────────────────────────╮"
+"│NAME      TYPE          DESCRIPTION          ID                                                             │"
+"│▸ shop    Folder                             f-2                                                            │"
+"│load_all  DataPipeline  Orchestrates ingest  it-3                                                           │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"workspaces › items › items                                                                                    "
+"↳ Urban1 Bronze › ingest                                                                                      "

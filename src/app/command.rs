@@ -15,7 +15,11 @@ pub struct Suggestion {
     keys: String,
 }
 
-const COMMANDS: &[(&str, &str)] = &[("q", "quit"), ("help", "key bindings")];
+const COMMANDS: &[(&str, &str)] = &[
+    ("ctx", "switch profile (identity)"),
+    ("q", "quit"),
+    ("help", "key bindings"),
+];
 
 fn candidates() -> Vec<Suggestion> {
     let mut out: Vec<Suggestion> = Kind::ALL
@@ -146,9 +150,17 @@ impl App {
         match word.as_str() {
             "q" | "quit" => self.quit = true,
             "help" => self.mode = Mode::Help,
+            "ctx" => match words.next() {
+                Some(name) => match self.find_profile(name) {
+                    Some(i) => self.switch_profile(i),
+                    None => self.flash(Level::Error, format!("no profile matches {name}")),
+                },
+                None => self.open_profiles(),
+            },
             w => {
                 if let Some((kind, item_type)) = Kind::lookup(w) {
-                    self.goto(kind, item_type);
+                    let all = words.next() == Some("all");
+                    self.goto(kind, item_type, all);
                 }
             }
         }

@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
-use crate::resources::Health;
+use crate::resources::{Health, Kind};
 use crate::theme::Theme;
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
@@ -47,7 +47,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
         return;
     }
 
-    let columns = q.kind.columns();
+    let columns = Kind::columns_for(q);
     let widths = column_widths(app, columns);
     let header = Row::new(
         columns
@@ -57,6 +57,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     let rows = app.view.iter().map(|&i| {
         let r = &app.rows[i];
         let color = match r.health {
+            _ if r.dir => t.accent,
             Health::Ok => t.ok,
             Health::Pending => t.pending,
             Health::Warn => t.warn,
@@ -71,6 +72,16 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
         .column_spacing(2)
         .row_highlight_style(Style::new().bg(t.select_bg).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(table, area, &mut app.table);
+}
+
+/// Widest a column may grow. The first column is the name, so it gets the most;
+/// free text like descriptions gets the least, since describe shows it in full.
+fn column_cap(index: usize, title: &str) -> usize {
+    match (index, title) {
+        (0, _) => 48,
+        (_, "DESCRIPTION") => 24,
+        _ => 32,
+    }
 }
 
 /// Each column as wide as its widest cell (capped), the last one takes the rest.
@@ -89,7 +100,7 @@ fn column_widths(app: &App, columns: &[&str]) -> Vec<Constraint> {
                 .chain(std::iter::once(columns[c].len()))
                 .max()
                 .unwrap_or(4);
-            Constraint::Length(widest.min(48) as u16)
+            Constraint::Length(widest.min(column_cap(c, columns[c])) as u16)
         })
         .collect()
 }

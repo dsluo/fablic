@@ -18,21 +18,27 @@ const LOGO: &[&str] = &[
 
 /// Key hints for the current kind, on top of the global ones.
 pub fn hints(kind: Kind) -> Vec<(&'static str, &'static str)> {
-    let mut h = vec![
+    let specific: &[(&str, &str)] = match kind {
+        Kind::Workspaces => &[("enter", "items"), ("o", "open")],
+        Kind::Items => &[
+            ("enter", "open"),
+            ("y", "definition"),
+            ("F", "flatten"),
+            ("o", "open"),
+        ],
+        Kind::OneLake => &[("enter", "open")],
+        _ => &[],
+    };
+    let global = [
         (":", "command"),
         ("/", "filter"),
         ("d", "describe"),
         ("esc", "back"),
+        ("ctrl-p", "profile"),
         ("ctrl-r", "refresh"),
         ("?", "help"),
     ];
-    match kind {
-        Kind::Workspaces => h.insert(0, ("enter", "items")),
-        Kind::Items => h.insert(0, ("enter", "jobs/files")),
-        Kind::OneLake => h.insert(0, ("enter", "open")),
-        _ => {}
-    }
-    h
+    specific.iter().copied().chain(global).collect()
 }
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
@@ -68,7 +74,9 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         label("Profile"),
         Span::styled(
             app.profile.name.clone(),
-            Style::new().fg(t.accent).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(app.profile.color.unwrap_or(t.accent))
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     if app.profile.readonly {
@@ -125,7 +133,9 @@ fn draw_compact(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let mut spans = vec![
         Span::styled(
             app.profile.name.clone(),
-            Style::new().fg(t.accent).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(app.profile.color.unwrap_or(t.accent))
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  {}", app.frame.query.scope.label()),
