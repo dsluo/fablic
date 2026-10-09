@@ -71,14 +71,14 @@ impl Kind {
             Kind::Workspaces => &["NAME", "TYPE", "CAPACITY", "ID"],
             Kind::Items => &["NAME", "TYPE", "DESCRIPTION", "ID"],
             Kind::Jobs => &[
-                "ID",
                 "STATUS",
                 "JOB TYPE",
                 "INVOKED BY",
                 "START",
                 "DURATION",
+                "ID",
             ],
-            Kind::Schedules => &["ID", "ENABLED", "TYPE", "INTERVAL", "START", "END"],
+            Kind::Schedules => &["TYPE", "ENABLED", "WHEN", "TIMEZONE", "START", "END", "ID"],
             Kind::OneLake => &["NAME", "KIND", "SIZE", "MODIFIED"],
             Kind::Shortcuts => &["NAME", "PATH", "TARGET TYPE", "TARGET"],
             Kind::Roles => &["PRINCIPAL", "TYPE", "ROLE", "ID"],
@@ -96,6 +96,16 @@ impl Kind {
                 &["NAME", "TYPE", "WORKSPACE", "FOLDER", "ID"]
             }
             Kind::Items if q.is_flat() => &["NAME", "TYPE", "FOLDER", "DESCRIPTION", "ID"],
+            // Runs of every item in a workspace say which item they belong to.
+            Kind::Jobs if q.scope.item.is_none() => &[
+                "ITEM",
+                "STATUS",
+                "JOB TYPE",
+                "INVOKED BY",
+                "START",
+                "DURATION",
+                "ID",
+            ],
             k => k.columns(),
         }
     }
@@ -164,12 +174,12 @@ fn item_type_for_alias(w: &str) -> Option<&'static str> {
         .map(|(_, t)| *t)
 }
 
-/// Item types that have Fabric job instances (run / cancel / history).
+/// Item types that can be run on demand, with the job type Fabric uses for
+/// running, listing schedules and history.
 pub const JOB_TYPES: &[(&str, &str)] = &[
     ("Notebook", "RunNotebook"),
     ("DataPipeline", "Pipeline"),
     ("SparkJobDefinition", "sparkjob"),
-    ("Lakehouse", "TableMaintenance"),
 ];
 
 pub fn job_type_for(item_type: &str) -> Option<&'static str> {

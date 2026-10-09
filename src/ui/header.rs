@@ -23,20 +23,29 @@ pub fn hints(kind: Kind) -> Vec<(&'static str, &'static str)> {
         Kind::Items => &[
             ("enter", "open"),
             ("y", "definition"),
+            ("r", "run"),
+            ("s", "schedules"),
             ("F", "flatten"),
             ("o", "open"),
         ],
+        Kind::Jobs => &[
+            ("enter", "details"),
+            ("r", "run again"),
+            ("ctrl-k", "cancel"),
+            ("s", "schedules"),
+        ],
+        Kind::Schedules => &[("r", "run now")],
         Kind::OneLake => &[("enter", "open")],
         _ => &[],
     };
     let global = [
         (":", "command"),
         ("/", "filter"),
+        ("?", "help"),
         ("d", "describe"),
         ("esc", "back"),
         ("ctrl-p", "profile"),
         ("ctrl-r", "refresh"),
-        ("?", "help"),
     ];
     specific.iter().copied().chain(global).collect()
 }

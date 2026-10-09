@@ -3,6 +3,7 @@
 
 mod actions;
 mod command;
+mod jobs;
 mod navigation;
 mod profiles;
 
@@ -15,7 +16,7 @@ use ratatui::widgets::TableState;
 
 use crate::filter::Filter;
 use crate::resources::{Health, Kind, Row};
-use crate::source::{Part, Query, Scope};
+use crate::source::{Action, Part, Query, Scope};
 
 pub use command::Suggestion;
 
@@ -27,6 +28,8 @@ pub enum Mode {
     Detail,
     Help,
     Profiles,
+    /// A write is waiting for y/N.
+    Confirm,
 }
 
 /// One table view: what is listed, how it is filtered, and where the cursor was.
@@ -54,6 +57,10 @@ pub enum Effect {
         title: String,
     },
     Open(String),
+    Act {
+        profile: String,
+        action: Action,
+    },
 }
 
 #[derive(Debug)]
@@ -65,6 +72,10 @@ pub enum Msg {
     Detail {
         title: String,
         result: Result<Vec<Part>, String>,
+    },
+    Acted {
+        action: Action,
+        result: Result<String, String>,
     },
 }
 
@@ -122,6 +133,10 @@ pub struct App {
     /// Highlighted entry in the profile picker.
     pub picker: usize,
     pub compact: bool,
+    /// The write waiting on the confirm prompt.
+    pub pending: Option<Action>,
+    /// Keep a jobs view polling until then, even with nothing running yet.
+    live_until: Option<Instant>,
     pub quit: bool,
     /// Rows of the body area at the last draw, for page up/down.
     pub page: usize,
@@ -156,6 +171,8 @@ impl App {
             active,
             picker: active,
             compact: false,
+            pending: None,
+            live_until: None,
             quit: false,
             page: 20,
             effects: Vec::new(),
@@ -252,12 +269,14 @@ impl App {
                     Err(e) => vec![format!("error: {e}")],
                 };
             }
+            Msg::Acted { action, result } => self.on_acted(action, result),
         }
     }
 
     pub fn on_tick(&mut self) {
-        let live =
-            self.kind() == Kind::Jobs && self.rows.iter().any(|r| r.health == Health::Pending);
+        let watching = self.live_until.is_some_and(|t| Instant::now() < t);
+        let live = self.kind() == Kind::Jobs
+            && (watching || self.rows.iter().any(|r| r.health == Health::Pending));
         let due = self.fetched_at.is_none_or(|t| t.elapsed() >= LIVE_REFRESH);
         if live && due && !self.loading && self.mode == Mode::Table {
             self.refresh(true);
@@ -303,6 +322,7 @@ impl App {
             Mode::Detail => self.key_detail(key, ctrl),
             Mode::Help => self.mode = Mode::Table,
             Mode::Profiles => self.key_profiles(key),
+            Mode::Confirm => self.key_confirm(key),
         }
     }
 
@@ -327,6 +347,9 @@ impl App {
             (KeyCode::Char('y'), false) => self.definition(),
             (KeyCode::Char('o'), false) => self.open_in_browser(),
             (KeyCode::Char('F'), false) => self.toggle_flat(),
+            (KeyCode::Char('r'), false) => self.run_job(),
+            (KeyCode::Char('k'), true) => self.cancel_job(),
+            (KeyCode::Char('s'), false) => self.goto(Kind::Schedules, None, false),
             (KeyCode::Char('p'), true) => self.open_profiles(),
             (KeyCode::Char('r'), true) => {
                 self.refresh(true);
@@ -458,6 +481,12 @@ pub(crate) mod tests {
                             .block_on(FakeSource.definition(workspace, item))
                             .map_err(|e| e.to_string());
                         app.on_msg(Msg::Detail { title, result });
+                    }
+                    Effect::Act { action, .. } => {
+                        let result = rt
+                            .block_on(FakeSource.act(action.clone()))
+                            .map_err(|e| e.to_string());
+                        app.on_msg(Msg::Acted { action, result });
                     }
                     Effect::Open(_) => {}
                 }

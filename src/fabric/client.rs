@@ -114,6 +114,20 @@ impl Client {
         }
     }
 
+    /// POST that answers 202 Accepted and points at what it started (job
+    /// runs, cancellations). Returns the `Location` header, if any.
+    pub async fn post_accepted(&self, path: &str) -> Result<Option<String>> {
+        let url = self.url(path);
+        let resp = self
+            .send(|| self.http.post(&url).header("content-length", "0"))
+            .await?;
+        Ok(resp
+            .headers()
+            .get(LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned))
+    }
+
     /// POST that may run as a long-running operation. Returns the final result body.
     pub async fn post_lro(&self, path: &str, body: Option<Value>) -> Result<Value> {
         let url = self.url(path);

@@ -42,6 +42,7 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
         Mode::Command => draw_palette(f, body, app, theme),
         Mode::Help => draw_help(f, body, theme),
         Mode::Profiles => draw_profiles(f, body, app, theme),
+        Mode::Confirm => draw_confirm(f, body, app, theme),
         _ => {}
     }
 }
@@ -148,6 +149,9 @@ pub const HELP: &[(&str, &str)] = &[
     ("y", "item definition (notebook source, ...)"),
     ("F", "flatten folders: every item below"),
     ("o", "open in the Fabric portal"),
+    ("r", "run the item (asks first)"),
+    ("ctrl-k", "cancel the selected run (asks first)"),
+    ("s", "schedules of the item"),
     ("ctrl-p", "switch profile (identity)"),
     ("j k g G", "move, top, bottom"),
     ("ctrl-f ctrl-b", "page down / up"),
@@ -179,6 +183,39 @@ fn draw_help(f: &mut Frame, body: Rect, t: &Theme) {
         Paragraph::new(lines).block(overlay_block(" help ", t)),
         area,
     );
+}
+
+fn draw_confirm(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
+    let Some(action) = &app.pending else {
+        return;
+    };
+    let question = format!("{}?", action.describe());
+    let w = (question.chars().count() as u16 + 6).clamp(40, body.width);
+    let area = Rect::new(
+        body.x + (body.width - w) / 2,
+        body.y + body.height.saturating_sub(5) / 2,
+        w,
+        5.min(body.height),
+    );
+    let lines = vec![
+        Line::styled(
+            question,
+            Style::new().fg(t.text).add_modifier(Modifier::BOLD),
+        ),
+        Line::styled(
+            format!("as {} ({})", app.profile.name, app.profile.account),
+            Style::new().fg(t.dim),
+        ),
+        Line::from(vec![
+            Span::styled("y", Style::new().fg(t.key).add_modifier(Modifier::BOLD)),
+            Span::styled(" yes   ", Style::new().fg(t.dim)),
+            Span::styled("any other key", Style::new().fg(t.key)),
+            Span::styled(" no", Style::new().fg(t.dim)),
+        ]),
+    ];
+    let block = overlay_block(" confirm ", t).border_style(Style::new().fg(t.warn));
+    f.render_widget(Clear, area);
+    f.render_widget(Paragraph::new(lines).centered().block(block), area);
 }
 
 fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
@@ -283,6 +320,19 @@ mod tests {
             KeyCode::Enter,
             KeyCode::Char('j'),
             KeyCode::Enter,
+        ];
+        steps(&mut app, &keys);
+        insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn snapshot_confirm_run() {
+        let mut app = fake_app();
+        let keys = [
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Char('G'),
+            KeyCode::Char('r'),
         ];
         steps(&mut app, &keys);
         insta::assert_snapshot!(render(&mut app));

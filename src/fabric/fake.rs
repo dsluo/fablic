@@ -2,12 +2,13 @@
 //! through the same row builders as live responses.
 
 use anyhow::{Result, bail};
+use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 
 use super::rows::{self, WsData};
-use crate::resources::{Health, Kind, Row};
-use crate::source::{DataSource, Part, Query};
+use crate::resources::{Kind, Row, job_type_for};
+use crate::source::{Action, DataSource, Part, Query};
 
 pub struct FakeSource;
 
@@ -90,35 +91,89 @@ fn fake_rows(q: &Query) -> Result<Vec<Row>> {
         Kind::Roles => rows::roles(&[json!({"id": "r-1", "role": "Admin",
             "principal": {"displayName": "Data Engineering", "type": "Group"}})]),
         Kind::Domains => bail!("403 /admin/domains: InsufficientPrivileges"),
-        Kind::Jobs => jobs(),
+        Kind::Jobs => jobs(q),
+        Kind::Schedules => schedules(),
         Kind::OneLake => onelake(q.scope.path.as_deref().unwrap_or("")),
         _ => Vec::new(),
     })
 }
 
-fn jobs() -> Vec<Row> {
-    let job = |id: &str, status: &str, start: &str, dur: &str| {
-        Row::new(
-            id,
-            id,
-            vec![
-                id.into(),
-                status.into(),
-                "RunNotebook".into(),
-                "Scheduled".into(),
-                start.into(),
-                dur.into(),
-            ],
-        )
-        .health(Health::from_status(status))
-        .raw(json!({"id": id, "status": status, "jobType": "RunNotebook",
-                    "invokeType": "Scheduled", "startTimeUtc": start}))
+/// Runs at fixed times relative to a fixed "now", so durations are stable.
+pub fn now() -> DateTime<Utc> {
+    rows::parse_utc("2026-10-09T13:10:00").unwrap_or_default()
+}
+
+fn runs(item: &str, job_type: &str) -> Vec<Value> {
+    let run = |id: &str, status: &str, start: &str, end: Option<&str>| {
+        let mut v = json!({"id": id, "itemId": item, "status": status,
+                           "jobType": job_type, "invokeType": "Scheduled",
+                           "startTimeUtc": start});
+        if let Some(e) = end {
+            v["endTimeUtc"] = e.into();
+        }
+        if status == "Failed" {
+            v["failureReason"] = json!({"errorCode": "NotebookExecutionFailed",
+                                        "message": "Py4JJavaError: table not found"});
+        }
+        v
     };
     vec![
-        job("job-3", "InProgress", "2026-10-09 13:02", "4m"),
-        job("job-2", "Failed", "2026-10-09 01:00", "12m"),
-        job("job-1", "Completed", "2026-10-08 01:00", "9m"),
+        run(
+            &format!("{item}-3"),
+            "InProgress",
+            "2026-10-09T13:02:00",
+            None,
+        ),
+        run(
+            &format!("{item}-2"),
+            "Failed",
+            "2026-10-09T01:00:00",
+            Some("2026-10-09T01:12:00"),
+        ),
+        run(
+            &format!("{item}-1"),
+            "Completed",
+            "2026-10-08T01:00:00",
+            Some("2026-10-08T01:09:00"),
+        ),
     ]
+}
+
+fn jobs(q: &Query) -> Vec<Row> {
+    match &q.scope.item {
+        Some(item) => {
+            let job_type = job_type_for(&item.item_type).unwrap_or("RunNotebook");
+            rows::jobs(&runs(&item.id, job_type), None, now())
+        }
+        None => {
+            let ws = q
+                .scope
+                .workspace
+                .as_ref()
+                .map(|w| w.id.as_str())
+                .unwrap_or("");
+            let mut out = Vec::new();
+            for i in workspace(ws).items {
+                let t = i["type"].as_str().unwrap_or("");
+                if let Some(job_type) = job_type_for(t) {
+                    let id = i["id"].as_str().unwrap_or("");
+                    out.extend(rows::jobs(&runs(id, job_type), Some(&i), now()));
+                }
+            }
+            rows::sort_runs(&mut out);
+            out
+        }
+    }
+}
+
+fn schedules() -> Vec<Row> {
+    rows::schedules(&[
+        json!({"id": "sch-1", "enabled": true, "configuration": {"type": "Daily",
+               "startDateTime": "2026-06-09T00:00:00", "endDateTime": "2027-06-09T00:00:00",
+               "localTimeZoneId": "Eastern Standard Time", "times": ["01:00"]}}),
+        json!({"id": "sch-2", "enabled": false, "configuration": {"type": "Cron", "interval": 30},
+               "enabledDetail": {"enabledControlType": "AutoDisabled"}}),
+    ])
 }
 
 fn onelake(base: &str) -> Vec<Row> {
@@ -153,6 +208,10 @@ impl DataSource for FakeSource {
     fn fetch(&self, q: Query, _force: bool) -> BoxFuture<'static, Result<Vec<Row>>> {
         let rows = fake_rows(&q);
         Box::pin(async move { rows })
+    }
+
+    fn act(&self, action: Action) -> BoxFuture<'static, Result<String>> {
+        Box::pin(async move { Ok(format!("(fake) {}", action.describe())) })
     }
 
     fn definition(&self, _ws: String, item: String) -> BoxFuture<'static, Result<Vec<Part>>> {

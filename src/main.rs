@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod fabric;
 mod filter;
+mod journal;
 mod resources;
 mod source;
 mod theme;
@@ -176,6 +177,14 @@ async fn perform(effect: Effect, sources: Sources, open_urls: bool) -> Option<Ms
                 Err(e) => Err(e),
             };
             Some(Msg::Detail { title, result })
+        }
+        Effect::Act { profile, action } => {
+            let result = match source(&profile) {
+                Ok(s) => s.act(action.clone()).await.map_err(|e| format!("{e:#}")),
+                Err(e) => Err(e),
+            };
+            journal::append(config::state_dir().as_deref(), &profile, &action, &result);
+            Some(Msg::Acted { action, result })
         }
         Effect::Open(url) => {
             if open_urls && let Err(e) = open::that_detached(&url) {

@@ -1,0 +1,26 @@
+---
+source: src/ui/mod.rs
+expression: render(&mut app)
+---
+"╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│Profile   fake                          <enter> open      <o> open                        ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
+"│Account   me@example.com                <y> definition    <:> command                     ├┤ ├─┤├┴┐│  ││    │"
+"│Scope     Urban1 Bronze                 <r> run           </> filter                      └  ┴ ┴└─┘┴─┘┴└─┘  │"
+"│Resource  items                         <s> schedules     <?> help                                          │"
+"│Count     4                             <F> flatten       <d> describe                                      │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"╭───────────────────────────────────────── items(Urban1 Bronze)[4] ──────────────────────────────────────────╮"
+"│NAME              TYPE           DESCRIPTION  ID                                                            │"
+"│▸ ingest          Folder                      f-1                                                           │"
+"│bronze_lh         Lakehouse                   it-2                                                          │"
+"│Finance Model     SemanticMod╭ confirm ───────────────────────────────────────╮                             │"
+"│transform_silver  Notebook   │  run Notebook transform_silver (RunNotebook)?  │                             │"
+"│                             │            as fake (me@example.com)            │                             │"
+"│                             │            y yes   any other key no            │                             │"
+"│                             ╰────────────────────────────────────────────────╯                             │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"workspaces › items                                                                                            "
+"↳ Urban1 Bronze                                                                                               "

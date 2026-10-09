@@ -15,8 +15,8 @@ use futures::{StreamExt, TryStreamExt};
 use serde_json::Value;
 
 use crate::auth::{FABRIC, TokenProvider};
-use crate::resources::{Kind, Row};
-use crate::source::{DataSource, Part, Query};
+use crate::resources::{Kind, Row, job_type_for};
+use crate::source::{Action, DataSource, Part, Query};
 pub use client::Client;
 use rows::WsData;
 
@@ -24,6 +24,8 @@ use rows::WsData;
 const WS_TTL: Duration = Duration::from_secs(60);
 /// Parallel requests when listing items across every workspace.
 const FAN_OUT: usize = 6;
+/// Parallel requests when listing runs of every runnable item in a workspace.
+const JOB_FAN_OUT: usize = 4;
 /// Capacity names change rarely, and listing capacities can take seconds.
 const CAP_TTL: Duration = Duration::from_secs(600);
 /// How long the workspace list waits for capacity names before showing ids.
@@ -148,10 +150,112 @@ impl Inner {
             Kind::Connections => rows::connections(&c.list("connections", "value").await?),
             Kind::Gateways => rows::gateways(&c.list("gateways", "value").await?),
             Kind::Domains => rows::domains(&c.list("admin/domains", "domains").await?),
-            k @ (Kind::Jobs | Kind::Schedules | Kind::OneLake | Kind::Shortcuts) => {
+            Kind::Jobs => {
+                let ws = ws.context("jobs need a workspace")?;
+                match &q.scope.item {
+                    Some(item) => {
+                        let list = self.runs(ws, &item.id).await?;
+                        rows::jobs(&list, None, chrono::Utc::now())
+                    }
+                    None => self.workspace_runs(ws, force).await?,
+                }
+            }
+            Kind::Schedules => {
+                let ws = ws.context("schedules need a workspace")?;
+                let item = q.scope.item.as_ref().context("schedules need an item")?;
+                let job_type = job_type_for(&item.item_type)
+                    .with_context(|| format!("{} items have no schedules", item.item_type))?;
+                let path = format!(
+                    "workspaces/{ws}/items/{}/jobs/{job_type}/schedules",
+                    item.id
+                );
+                rows::schedules(&c.list(&path, "value").await?)
+            }
+            k @ (Kind::OneLake | Kind::Shortcuts) => {
                 bail!("{} is not implemented yet", k.name())
             }
         })
+    }
+
+    async fn runs(&self, ws: &str, item: &str) -> Result<Vec<Value>> {
+        self.client
+            .list(
+                &format!("workspaces/{ws}/items/{item}/jobs/instances"),
+                "value",
+            )
+            .await
+    }
+
+    /// Runs of every runnable item in a workspace. There is no workspace-wide
+    /// endpoint, so this asks each item. Items that fail (e.g. no permission)
+    /// are skipped unless every one of them fails.
+    async fn workspace_runs(&self, ws: &str, force: bool) -> Result<Vec<Row>> {
+        let data = self.workspace(ws, force).await?;
+        let runnable: Vec<Value> = data
+            .items
+            .iter()
+            .filter(|i| job_type_for(i["type"].as_str().unwrap_or("")).is_some())
+            .cloned()
+            .collect();
+        let results: Vec<(Value, Result<Vec<Value>>)> = futures::stream::iter(runnable)
+            .map(|item| async move {
+                let id = item["id"].as_str().unwrap_or_default().to_owned();
+                let res = self.runs(ws, &id).await;
+                (item, res)
+            })
+            .buffer_unordered(JOB_FAN_OUT)
+            .collect()
+            .await;
+        let now = chrono::Utc::now();
+        let (mut rows, mut errors) = (Vec::new(), Vec::new());
+        let total = results.len();
+        for (item, res) in results {
+            match res {
+                Ok(list) => rows.extend(rows::jobs(&list, Some(&item), now)),
+                Err(e) => {
+                    tracing::warn!(item = %item["displayName"], "listing runs: {e:#}");
+                    errors.push(e);
+                }
+            }
+        }
+        if total > 0 && errors.len() == total {
+            return Err(errors.remove(0));
+        }
+        rows::sort_runs(&mut rows);
+        Ok(rows)
+    }
+
+    async fn act(&self, action: Action) -> Result<String> {
+        match action {
+            Action::RunJob {
+                workspace,
+                item,
+                job_type,
+            } => {
+                let path = format!(
+                    "workspaces/{workspace}/items/{}/jobs/instances?jobType={job_type}",
+                    item.id
+                );
+                let location = self.client.post_accepted(&path).await?;
+                let run = location
+                    .as_deref()
+                    .and_then(|l| l.rsplit('/').next())
+                    .unwrap_or("?");
+                Ok(format!("started {} run {run}", item.name))
+            }
+            Action::CancelJob {
+                workspace,
+                item,
+                job,
+            } => {
+                let path = format!(
+                    "workspaces/{workspace}/items/{}/jobs/instances/{job}/cancel",
+                    item.id
+                );
+                self.client.post_accepted(&path).await?;
+                Ok(format!("cancel requested for {} run {job}", item.name))
+            }
+        }
     }
 
     async fn definition(&self, ws: &str, item: &str) -> Result<Vec<Part>> {
@@ -201,6 +305,11 @@ impl DataSource for FabricSource {
         Box::pin(async move { inner.definition(&ws, &item).await })
     }
 
+    fn act(&self, action: Action) -> BoxFuture<'static, Result<String>> {
+        let inner = self.inner.clone();
+        Box::pin(async move { inner.act(action).await })
+    }
+
     fn warm(&self) -> BoxFuture<'static, Result<()>> {
         let inner = self.inner.clone();
         Box::pin(async move { inner.tokens.token(FABRIC).await.map(|_| ()) })
@@ -213,7 +322,7 @@ mod tests {
     use crate::source::{Ref, Scope};
     use client::tests::StaticToken;
     use serde_json::json;
-    use wiremock::matchers::path;
+    use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn source(server: &MockServer) -> FabricSource {
@@ -259,6 +368,100 @@ mod tests {
         let inside = src.fetch(q, false).await.unwrap();
         assert_eq!(inside[0].name, "nb");
         // `expect(1)` on each mock is verified when the server drops.
+    }
+
+    fn ws_scope() -> Scope {
+        Scope {
+            workspace: Some(Ref {
+                id: "w1".into(),
+                name: "W".into(),
+            }),
+            ..Scope::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_jobs_fan_out_and_skip_failing_items() {
+        let server = MockServer::start().await;
+        Mock::given(path("/workspaces/w1/folders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": []})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/workspaces/w1/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"id": "nb", "displayName": "load", "type": "Notebook"},
+                {"id": "pl", "displayName": "orchestrate", "type": "DataPipeline"},
+                {"id": "rpt", "displayName": "sales", "type": "Report"}
+            ]})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/workspaces/w1/items/nb/jobs/instances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"id": "r1", "status": "Completed", "startTimeUtc": "2026-10-09T01:00:00",
+                 "endTimeUtc": "2026-10-09T01:05:00"}
+            ]})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/workspaces/w1/items/pl/jobs/instances"))
+            .respond_with(
+                ResponseTemplate::new(403).set_body_json(json!({"errorCode": "Forbidden"})),
+            )
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let rows = src
+            .fetch(Query::new(Kind::Jobs, ws_scope()), false)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cells[0], "load");
+        assert_eq!(rows[0].cells[5], "5m00s");
+    }
+
+    #[tokio::test]
+    async fn run_and_cancel_post_to_job_endpoints() {
+        let server = MockServer::start().await;
+        let started = format!(
+            "{}/workspaces/w1/items/nb/jobs/instances/run-9",
+            server.uri()
+        );
+        Mock::given(method("POST"))
+            .and(path("/workspaces/w1/items/nb/jobs/instances"))
+            .and(query_param("jobType", "RunNotebook"))
+            .respond_with(ResponseTemplate::new(202).insert_header("location", started.as_str()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/workspaces/w1/items/nb/jobs/instances/run-9/cancel"))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let item = crate::source::ItemRef {
+            id: "nb".into(),
+            name: "load".into(),
+            item_type: "Notebook".into(),
+        };
+        let msg = src
+            .act(Action::RunJob {
+                workspace: "w1".into(),
+                item: item.clone(),
+                job_type: "RunNotebook".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(msg, "started load run run-9");
+        let msg = src
+            .act(Action::CancelJob {
+                workspace: "w1".into(),
+                item,
+                job: "run-9".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(msg, "cancel requested for load run run-9");
     }
 
     #[test]

@@ -88,12 +88,43 @@ pub struct Part {
     pub text: String,
 }
 
+/// A write. Every one goes through a confirm prompt, the read-only guard and
+/// the journal before it reaches a source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    RunJob {
+        workspace: String,
+        item: ItemRef,
+        job_type: String,
+    },
+    CancelJob {
+        workspace: String,
+        item: ItemRef,
+        job: String,
+    },
+}
+
+impl Action {
+    /// What the confirm prompt and journal call it.
+    pub fn describe(&self) -> String {
+        match self {
+            Action::RunJob { item, job_type, .. } => {
+                format!("run {} {} ({job_type})", item.item_type, item.name)
+            }
+            Action::CancelJob { item, job, .. } => format!("cancel run {job} of {}", item.name),
+        }
+    }
+}
+
 pub trait DataSource: Send + Sync {
     /// Rows for `q`. `force` skips any cache the source keeps.
     fn fetch(&self, q: Query, force: bool) -> BoxFuture<'static, Result<Vec<Row>>>;
 
     /// An item's definition files (notebook source, pipeline JSON, ...).
     fn definition(&self, workspace: String, item: String) -> BoxFuture<'static, Result<Vec<Part>>>;
+
+    /// Carry out a write. Returns a short result for the status line.
+    fn act(&self, action: Action) -> BoxFuture<'static, Result<String>>;
 
     /// Get a token ahead of time so switching to this profile is instant.
     fn warm(&self) -> BoxFuture<'static, Result<()>> {

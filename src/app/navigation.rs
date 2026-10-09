@@ -5,7 +5,7 @@ use crate::resources::{Kind, Row, ScopeNeed, has_onelake, job_type_for};
 use crate::source::{ItemRef, Query, Ref, Scope};
 
 impl App {
-    fn push(&mut self, query: Query) {
+    pub(super) fn push_query(&mut self, query: Query) {
         if query == self.frame.query {
             // `:ws` while already on workspaces: just refresh, don't stack a copy.
             self.mode = Mode::Table;
@@ -88,7 +88,7 @@ impl App {
         match next {
             Some(q) => {
                 self.flash(Level::Info, format!("↳ {}", q.scope.label()));
-                self.push(q);
+                self.push_query(q);
             }
             None => self.describe(),
         }
@@ -133,7 +133,7 @@ impl App {
         };
         let mut q = Query::new(kind, scope);
         q.item_type = item_type.map(str::to_owned);
-        self.push(q);
+        self.push_query(q);
     }
 
     fn need(&mut self, what: &str, kind: Kind) {
