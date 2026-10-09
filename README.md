@@ -36,12 +36,17 @@ color = "#89b4fa"
 | `:` | command palette: `:ws`, `:items`, `:nb`, `:lakehouses`, `:capacities`, `:ctx`, `:q`, ... |
 | `:nb all` | a kind across every workspace |
 | `/` | filter: text, `a\|b`, `/regex/`, `~fuzzy`, `!` to invert |
-| `enter` / `esc` | drill in / clear filter, then go back |
+| `enter` / `esc` | drill in (lakehouses open in OneLake; files preview) / clear filter, then go back |
 | `F` | flatten workspace folders: every item below, with its folder path |
 | `d` / `y` | describe as YAML / item definition (notebook source, pipeline JSON) |
 | `o` | open in the Fabric portal |
+| `r` / `ctrl-k` | run the item / cancel the selected run (both ask first; blocked on read-only profiles) |
+| `s` | schedules of the item; in OneLake, the schema of a table folder |
+| `D` | download a OneLake file to the current directory |
 | `ctrl-p` | switch profile |
 | `ctrl-r` / `ctrl-e` / `?` | refresh / compact header / help |
+
+Every run and cancel is recorded in `~/.local/state/fablic/journal.log`.
 
 ## Development
 

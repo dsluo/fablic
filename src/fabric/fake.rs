@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::rows::{self, WsData};
 use crate::resources::{Kind, Row, job_type_for};
-use crate::source::{Action, DataSource, Part, Query};
+use crate::source::{Action, DataSource, PREVIEW_BYTES, Part, Query, table_of};
 
 pub struct FakeSource;
 
@@ -93,7 +93,13 @@ fn fake_rows(q: &Query) -> Result<Vec<Row>> {
         Kind::Domains => bail!("403 /admin/domains: InsufficientPrivileges"),
         Kind::Jobs => jobs(q),
         Kind::Schedules => schedules(),
-        Kind::OneLake => onelake(q.scope.path.as_deref().unwrap_or("")),
+        Kind::OneLake => {
+            let item = q.scope.item.as_ref().map(|i| i.id.as_str()).unwrap_or("");
+            onelake(item, q.scope.path.as_deref().unwrap_or(""))
+        }
+        Kind::Shortcuts => rows::shortcuts(&[json!({"name": "claims", "path": "Tables",
+            "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-2",
+                       "itemId": "it-9", "path": "Tables/claims"}}})]),
         _ => Vec::new(),
     })
 }
@@ -176,31 +182,36 @@ fn schedules() -> Vec<Row> {
     ])
 }
 
-fn onelake(base: &str) -> Vec<Row> {
-    let entry = |name: &str, dir: bool, size: &str| {
-        let path = if base.is_empty() {
-            name.to_string()
+/// DFS-style listing of the fake lakehouse.
+fn onelake(item: &str, dir: &str) -> Vec<Row> {
+    let entry = |name: &str, is_dir: bool, len: u64| {
+        let path = if dir.is_empty() {
+            name.to_owned()
         } else {
-            format!("{base}/{name}")
+            format!("{dir}/{name}")
         };
-        let kind = if dir { "dir" } else { "file" };
-        let row = Row::new(
-            path.clone(),
-            name,
-            vec![
-                name.into(),
-                kind.into(),
-                size.into(),
-                "2026-10-09 01:12".into(),
-            ],
-        )
-        .raw(json!({"name": path, "isDirectory": dir}));
-        if dir { row.dir() } else { row }
+        json!({"name": format!("{item}/{path}"), "isDirectory": is_dir.to_string(),
+               "contentLength": len.to_string(), "lastModified": "Fri, 09 Oct 2026 05:12:00 GMT"})
     };
-    if base.is_empty() {
-        vec![entry("Tables", true, ""), entry("Files", true, "")]
-    } else {
-        vec![entry("raw", true, ""), entry("readme.txt", false, "1.2 KB")]
+    let paths = match dir {
+        "" => vec![entry("Files", true, 0), entry("Tables", true, 0)],
+        "Files" => vec![
+            entry("readme.txt", false, 58),
+            entry("raw", true, 0),
+            entry("extract.parquet", false, 9_000),
+        ],
+        "Files/raw" => vec![entry("events.json", false, 120)],
+        "Tables" => vec![entry("sales", true, 0), entry("customers", true, 0)],
+        _ => Vec::new(),
+    };
+    rows::onelake(&paths, item)
+}
+
+fn file(path: &str) -> &'static [u8] {
+    match path {
+        "Files/readme.txt" => b"Bronze landing zone.\nraw/: one folder per source system.\n",
+        "Files/raw/events.json" => b"{\"id\": 1, \"kind\": \"admit\"}\n",
+        _ => b"PAR1\0\x15\x04binary",
     }
 }
 
@@ -208,6 +219,44 @@ impl DataSource for FakeSource {
     fn fetch(&self, q: Query, _force: bool) -> BoxFuture<'static, Result<Vec<Row>>> {
         let rows = fake_rows(&q);
         Box::pin(async move { rows })
+    }
+
+    fn preview(
+        &self,
+        _ws: String,
+        _item: String,
+        path: String,
+        total: Option<u64>,
+    ) -> BoxFuture<'static, Result<Part>> {
+        let text = rows::preview_text(file(&path), total, PREVIEW_BYTES);
+        Box::pin(async move { Ok(Part { path, text }) })
+    }
+
+    fn schema(&self, _ws: String, _item: String, path: String) -> BoxFuture<'static, Result<Part>> {
+        Box::pin(async move {
+            let (schema, table) = table_of(&path)?;
+            let meta = json!({"columns": [
+                {"name": "id", "type_name": "LONG", "nullable": false},
+                {"name": "amount", "type_name": "DECIMAL", "type_precision": 18, "type_scale": 2},
+                {"name": "loaded_at", "type_name": "TIMESTAMP"}
+            ]});
+            Ok(Part {
+                path: format!("{schema}.{table}"),
+                text: rows::schema_text(&meta),
+            })
+        })
+    }
+
+    /// Reports the size without writing anything, so tests don't touch disk.
+    fn download(
+        &self,
+        _ws: String,
+        _item: String,
+        path: String,
+        _dest: std::path::PathBuf,
+    ) -> BoxFuture<'static, Result<u64>> {
+        let n = file(&path).len() as u64;
+        Box::pin(async move { Ok(n) })
     }
 
     fn act(&self, action: Action) -> BoxFuture<'static, Result<String>> {

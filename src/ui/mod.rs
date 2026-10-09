@@ -151,7 +151,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("o", "open in the Fabric portal"),
     ("r", "run the item (asks first)"),
     ("ctrl-k", "cancel the selected run (asks first)"),
-    ("s", "schedules of the item"),
+    ("s", "schedules; in OneLake, a table's schema"),
+    ("D", "download a OneLake file to ./"),
     ("ctrl-p", "switch profile (identity)"),
     ("j k g G", "move, top, bottom"),
     ("ctrl-f ctrl-b", "page down / up"),
@@ -333,6 +334,20 @@ mod tests {
             KeyCode::Enter,
             KeyCode::Char('G'),
             KeyCode::Char('r'),
+        ];
+        steps(&mut app, &keys);
+        insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn snapshot_onelake_files() {
+        let mut app = fake_app();
+        let keys = [
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Enter,
         ];
         steps(&mut app, &keys);
         insta::assert_snapshot!(render(&mut app));

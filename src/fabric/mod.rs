@@ -2,13 +2,14 @@
 
 pub mod client;
 pub mod fake;
+pub mod onelake;
 pub mod rows;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use base64::Engine;
 use futures::future::BoxFuture;
 use futures::{StreamExt, TryStreamExt};
@@ -16,8 +17,9 @@ use serde_json::Value;
 
 use crate::auth::{FABRIC, TokenProvider};
 use crate::resources::{Kind, Row, job_type_for};
-use crate::source::{Action, DataSource, Part, Query};
+use crate::source::{Action, DataSource, PREVIEW_BYTES, Part, Query, table_of};
 pub use client::Client;
+use onelake::OneLake;
 use rows::WsData;
 
 /// How long a workspace's folder/item listing is reused while navigating its tree.
@@ -39,6 +41,7 @@ type Cached<T> = Arc<Mutex<Option<(Instant, T)>>>;
 
 struct Inner {
     client: Client,
+    lake: OneLake,
     tokens: Arc<dyn TokenProvider>,
     spaces: Mutex<HashMap<String, (Instant, Arc<WsData>)>>,
     capacities: Cached<Vec<Value>>,
@@ -46,13 +49,19 @@ struct Inner {
 
 impl FabricSource {
     pub fn new(tokens: Arc<dyn TokenProvider>) -> FabricSource {
-        FabricSource::with_client(Client::new(tokens.clone()), tokens)
+        let lake = OneLake::new(tokens.clone());
+        FabricSource::with_clients(Client::new(tokens.clone()), lake, tokens)
     }
 
-    pub fn with_client(client: Client, tokens: Arc<dyn TokenProvider>) -> FabricSource {
+    pub fn with_clients(
+        client: Client,
+        lake: OneLake,
+        tokens: Arc<dyn TokenProvider>,
+    ) -> FabricSource {
         FabricSource {
             inner: Arc::new(Inner {
                 client,
+                lake,
                 tokens,
                 spaces: Mutex::new(HashMap::new()),
                 capacities: Arc::default(),
@@ -171,8 +180,17 @@ impl Inner {
                 );
                 rows::schedules(&c.list(&path, "value").await?)
             }
-            k @ (Kind::OneLake | Kind::Shortcuts) => {
-                bail!("{} is not implemented yet", k.name())
+            Kind::OneLake => {
+                let ws = ws.context("OneLake needs a workspace")?;
+                let item = q.scope.item.as_ref().context("OneLake needs an item")?;
+                let dir = q.scope.path.as_deref().unwrap_or("");
+                rows::onelake(&self.lake.list(ws, &item.id, dir).await?, &item.id)
+            }
+            Kind::Shortcuts => {
+                let ws = ws.context("shortcuts need a workspace")?;
+                let item = q.scope.item.as_ref().context("shortcuts need an item")?;
+                let path = format!("workspaces/{ws}/items/{}/shortcuts", item.id);
+                rows::shortcuts(&c.list(&path, "value").await?)
             }
         })
     }
@@ -305,6 +323,44 @@ impl DataSource for FabricSource {
         Box::pin(async move { inner.definition(&ws, &item).await })
     }
 
+    fn preview(
+        &self,
+        ws: String,
+        item: String,
+        path: String,
+        total: Option<u64>,
+    ) -> BoxFuture<'static, Result<Part>> {
+        let inner = self.inner.clone();
+        Box::pin(async move {
+            let bytes = inner.lake.head(&ws, &item, &path, PREVIEW_BYTES).await?;
+            let text = rows::preview_text(&bytes, total, PREVIEW_BYTES);
+            Ok(Part { path, text })
+        })
+    }
+
+    fn schema(&self, ws: String, item: String, path: String) -> BoxFuture<'static, Result<Part>> {
+        let inner = self.inner.clone();
+        Box::pin(async move {
+            let (schema, table) = table_of(&path)?;
+            let meta = inner.lake.table(&ws, &item, &schema, &table).await?;
+            Ok(Part {
+                path: format!("{schema}.{table}"),
+                text: rows::schema_text(&meta),
+            })
+        })
+    }
+
+    fn download(
+        &self,
+        ws: String,
+        item: String,
+        path: String,
+        dest: std::path::PathBuf,
+    ) -> BoxFuture<'static, Result<u64>> {
+        let inner = self.inner.clone();
+        Box::pin(async move { inner.lake.download(&ws, &item, &path, &dest).await })
+    }
+
     fn act(&self, action: Action) -> BoxFuture<'static, Result<String>> {
         let inner = self.inner.clone();
         Box::pin(async move { inner.act(action).await })
@@ -327,7 +383,12 @@ mod tests {
 
     async fn source(server: &MockServer) -> FabricSource {
         let tokens: Arc<dyn TokenProvider> = Arc::new(StaticToken);
-        FabricSource::with_client(Client::with_base(tokens.clone(), server.uri()), tokens)
+        let lake = OneLake::with_bases(tokens.clone(), &server.uri(), &server.uri());
+        FabricSource::with_clients(
+            Client::with_base(tokens.clone(), server.uri()),
+            lake,
+            tokens,
+        )
     }
 
     #[tokio::test]

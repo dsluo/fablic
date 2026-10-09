@@ -123,6 +123,33 @@ pub trait DataSource: Send + Sync {
     /// An item's definition files (notebook source, pipeline JSON, ...).
     fn definition(&self, workspace: String, item: String) -> BoxFuture<'static, Result<Vec<Part>>>;
 
+    /// The start of a OneLake file as text (or a note that it's binary).
+    /// `total` is the file size when the listing knew it.
+    fn preview(
+        &self,
+        workspace: String,
+        item: String,
+        path: String,
+        total: Option<u64>,
+    ) -> BoxFuture<'static, Result<Part>>;
+
+    /// Columns of the Delta table at `path` (`Tables/<t>` or `Tables/<schema>/<t>`).
+    fn schema(
+        &self,
+        workspace: String,
+        item: String,
+        path: String,
+    ) -> BoxFuture<'static, Result<Part>>;
+
+    /// Copy a OneLake file to a local path. Returns bytes written.
+    fn download(
+        &self,
+        workspace: String,
+        item: String,
+        path: String,
+        dest: std::path::PathBuf,
+    ) -> BoxFuture<'static, Result<u64>>;
+
     /// Carry out a write. Returns a short result for the status line.
     fn act(&self, action: Action) -> BoxFuture<'static, Result<String>>;
 
@@ -133,3 +160,16 @@ pub trait DataSource: Send + Sync {
 }
 
 pub type SharedSource = Arc<dyn DataSource>;
+
+/// Bytes read for a file preview.
+pub const PREVIEW_BYTES: usize = 64 * 1024;
+
+/// `Tables/sales` -> (`dbo`, `sales`); `Tables/finance/sales` -> (`finance`, `sales`).
+pub fn table_of(path: &str) -> Result<(String, String)> {
+    let parts: Vec<&str> = path.split('/').collect();
+    match parts[..] {
+        ["Tables", t] => Ok(("dbo".into(), t.into())),
+        ["Tables", s, t] => Ok((s.into(), t.into())),
+        _ => anyhow::bail!("s shows the schema of a table folder under Tables/"),
+    }
+}

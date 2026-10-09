@@ -489,6 +489,188 @@ pub fn schedules(list: &[Value]) -> Vec<Row> {
         .collect()
 }
 
+/// `512 B`, `1.2 KB`, `3.4 MB`.
+pub fn size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = bytes as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit < UNITS.len() - 1 {
+        v /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{v:.1} {}", UNITS[unit])
+    }
+}
+
+/// One OneLake directory listing. DFS names are `{item}/{path}`; rows carry
+/// the path relative to the item as their id. Directories first.
+pub fn onelake(paths: &[Value], item: &str) -> Vec<Row> {
+    let prefix = format!("{item}/");
+    let mut rows: Vec<Row> = paths
+        .iter()
+        .map(|p| {
+            let full = s(p, "name");
+            let rel = full.strip_prefix(&prefix).unwrap_or(full);
+            let name = rel.rsplit('/').next().unwrap_or(rel);
+            // DFS sends booleans and numbers as strings.
+            let dir = s(p, "isDirectory") == "true" || p.get("isDirectory") == Some(&json!(true));
+            let len: u64 = s(p, "contentLength").parse().unwrap_or(0);
+            let modified = DateTime::parse_from_rfc2822(s(p, "lastModified"))
+                .ok()
+                .map(|t| t.with_timezone(&Utc));
+            let row = Row::new(
+                rel,
+                name,
+                vec![
+                    if dir {
+                        format!("▸ {name}")
+                    } else {
+                        name.to_owned()
+                    },
+                    if dir { "dir" } else { "file" }.into(),
+                    if dir { String::new() } else { size(len) },
+                    local_time(modified),
+                ],
+            )
+            .raw(with(p, json!({"path": rel, "size": len})));
+            if dir { row.dir() } else { row }
+        })
+        .collect();
+    rows.sort_by_key(|r| (!r.dir, r.name.to_lowercase()));
+    rows
+}
+
+/// Where a shortcut points, in one line.
+fn shortcut_target(t: &Value) -> (String, String) {
+    let kind = s(t, "type").to_owned();
+    let detail = match kind.as_str() {
+        "OneLake" => format!(
+            "{}/{}/{}",
+            at(t, "/oneLake/workspaceId"),
+            at(t, "/oneLake/itemId"),
+            at(t, "/oneLake/path")
+        ),
+        "AdlsGen2" => format!(
+            "{}{}",
+            at(t, "/adlsGen2/location"),
+            at(t, "/adlsGen2/subpath")
+        ),
+        "AmazonS3" => format!(
+            "{}{}",
+            at(t, "/amazonS3/location"),
+            at(t, "/amazonS3/subpath")
+        ),
+        "GoogleCloudStorage" => format!(
+            "{}{}",
+            at(t, "/googleCloudStorage/location"),
+            at(t, "/googleCloudStorage/subpath")
+        ),
+        "S3Compatible" => format!(
+            "{}/{}{}",
+            at(t, "/s3Compatible/location"),
+            at(t, "/s3Compatible/bucket"),
+            at(t, "/s3Compatible/subpath")
+        ),
+        "Dataverse" => format!(
+            "{} {}",
+            at(t, "/dataverse/environmentDomain"),
+            at(t, "/dataverse/tableName")
+        ),
+        _ => String::new(),
+    };
+    (kind, detail)
+}
+
+pub fn shortcuts(list: &[Value]) -> Vec<Row> {
+    let mut rows: Vec<Row> = list
+        .iter()
+        .map(|sc| {
+            let (kind, target) = shortcut_target(sc.get("target").unwrap_or(&Value::Null));
+            let full = format!("{}/{}", s(sc, "path"), s(sc, "name"));
+            Row::new(
+                full,
+                s(sc, "name"),
+                vec![s(sc, "name").into(), s(sc, "path").into(), kind, target],
+            )
+            .raw(sc.clone())
+        })
+        .collect();
+    rows.sort_by_key(|r| r.id.to_lowercase());
+    rows
+}
+
+/// Columns of a table as aligned text: name, type, nullability. (The API's
+/// `partition_index` is 0 for every column of unpartitioned tables, so it
+/// can't tell partition columns apart and isn't shown.)
+pub fn schema_text(table: &Value) -> String {
+    let cols = table
+        .get("columns")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if cols.is_empty() {
+        return "(no columns reported)".into();
+    }
+    let ty = |c: &Value| -> String {
+        let name = s(c, "type_name");
+        let (p, sc) = (
+            c.get("type_precision").and_then(Value::as_i64).unwrap_or(0),
+            c.get("type_scale").and_then(Value::as_i64).unwrap_or(0),
+        );
+        match s(c, "type_text") {
+            "" if name.eq_ignore_ascii_case("decimal") && p > 0 => format!("decimal({p},{sc})"),
+            "" => name.to_lowercase(),
+            text => text.to_owned(),
+        }
+    };
+    let width = cols
+        .iter()
+        .map(|c| s(c, "name").chars().count())
+        .max()
+        .unwrap_or(4)
+        .max(6);
+    let tw = cols.iter().map(|c| ty(c).len()).max().unwrap_or(4).max(4);
+    let mut out = format!("{:<width$}  {:<tw$}  NULL\n", "COLUMN", "TYPE");
+    for c in &cols {
+        let nullable = c.get("nullable").and_then(Value::as_bool).unwrap_or(true);
+        out.push_str(&format!(
+            "{:<width$}  {:<tw$}  {}\n",
+            s(c, "name"),
+            ty(c),
+            if nullable { "yes" } else { "no" },
+        ));
+    }
+    out
+}
+
+/// Text to show for the start of a file, or a note when it isn't text.
+pub fn preview_text(bytes: &[u8], total: Option<u64>, max: usize) -> String {
+    let binary =
+        bytes.contains(&0) || std::str::from_utf8(bytes).is_err_and(|e| e.error_len().is_some());
+    if binary {
+        return format!(
+            "(binary file{}; press D to download it)",
+            total.map(|t| format!(", {}", size(t))).unwrap_or_default()
+        );
+    }
+    // A multi-byte character may be cut at the range boundary; drop the partial tail.
+    let text = match std::str::from_utf8(bytes) {
+        Ok(t) => t.to_owned(),
+        Err(e) => String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned(),
+    };
+    let mut out = text.replace('\t', "    ");
+    if bytes.len() >= max && total.is_none_or(|t| t > max as u64) {
+        out.push_str(&format!(
+            "\n… (first {} only; press D to download)",
+            size(max as u64)
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,6 +796,60 @@ mod tests {
         assert_eq!(rows[0].cells[4], "2026-06-09");
         assert_eq!(rows[3].cells[1], "no (AutoDisabled)");
         assert_eq!(rows[3].health, Health::Bad);
+    }
+
+    #[test]
+    fn onelake_rows_strip_item_prefix_dirs_first() {
+        let paths = [
+            json!({"name": "i/Files/z.csv", "isDirectory": "false", "contentLength": "1536",
+                   "lastModified": "Mon, 27 Oct 2025 13:53:32 GMT"}),
+            json!({"name": "i/Files/raw", "isDirectory": "true", "contentLength": "0"}),
+        ];
+        let rows = onelake(&paths, "i");
+        assert_eq!(rows[0].id, "Files/raw");
+        assert!(rows[0].dir);
+        assert_eq!(rows[1].cells[..3], ["z.csv", "file", "1.5 KB"]);
+        assert_eq!(rows[1].cells[3], "2025-10-27 13:53");
+    }
+
+    #[test]
+    fn shortcut_targets() {
+        let rows = shortcuts(&[json!({"name": "sales", "path": "Tables",
+            "target": {"type": "AdlsGen2", "adlsGen2": {"location": "https://acct.dfs.core.windows.net",
+                       "subpath": "/c/sales"}}})]);
+        assert_eq!(
+            rows[0].cells,
+            [
+                "sales",
+                "Tables",
+                "AdlsGen2",
+                "https://acct.dfs.core.windows.net/c/sales"
+            ]
+        );
+        assert_eq!(rows[0].id, "Tables/sales");
+    }
+
+    #[test]
+    fn schema_lists_columns() {
+        let t = json!({"columns": [
+            {"name": "id", "type_name": "LONG", "nullable": false, "partition_index": 0},
+            {"name": "amount", "type_name": "DECIMAL", "type_precision": 18, "type_scale": 2, "nullable": true}
+        ]});
+        let text = schema_text(&t);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "COLUMN  TYPE           NULL");
+        assert_eq!(lines[1].trim_end(), "id      long           no");
+        assert_eq!(lines[2].trim_end(), "amount  decimal(18,2)  yes");
+    }
+
+    #[test]
+    fn previews_text_and_flags_binary() {
+        assert_eq!(preview_text(b"a\tb\n", Some(4), 64), "a    b\n");
+        assert!(preview_text(b"PAR1\0\x15", Some(9000), 64).starts_with("(binary file, 8.8 KB"));
+        let cut = preview_text("é".repeat(40).as_bytes().get(..63).unwrap(), Some(80), 63);
+        assert!(cut.ends_with("press D to download)"), "{cut}");
+        assert_eq!(size(512), "512 B");
+        assert_eq!(size(3 * 1024 * 1024), "3.0 MB");
     }
 
     #[test]

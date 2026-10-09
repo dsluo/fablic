@@ -1,6 +1,6 @@
 //! Per-row actions: item definitions, open in browser, flatten folders.
 
-use super::{App, Detail, Effect, Level, Mode};
+use super::{App, Detail, DetailRequest, Effect, Level, Mode};
 use crate::resources::{Kind, Row};
 
 const PORTAL: &str = "https://app.fabric.microsoft.com";
@@ -44,18 +44,27 @@ impl App {
         let Some(workspace) = self.workspace_id(&row) else {
             return;
         };
-        let title = format!("{} › definition", row.name);
+        self.open_detail(
+            format!("{} › definition", row.name),
+            DetailRequest::Definition {
+                workspace,
+                item: row.id,
+            },
+        );
+    }
+
+    /// Show the detail view with a placeholder and fetch its contents.
+    pub(super) fn open_detail(&mut self, title: String, request: DetailRequest) {
         self.detail = Detail {
             title: title.clone(),
-            lines: vec!["loading definition…".into()],
+            lines: vec!["loading…".into()],
             scroll: 0,
         };
         self.mode = Mode::Detail;
-        self.effects.push(Effect::Definition {
+        self.effects.push(Effect::Detail {
             profile: self.profile.name.clone(),
-            workspace,
-            item: row.id,
             title,
+            request,
         });
     }
 

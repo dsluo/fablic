@@ -1,6 +1,7 @@
 mod app;
 mod auth;
 mod config;
+mod effects;
 mod fabric;
 mod filter;
 mod journal;
@@ -23,9 +24,10 @@ use ratatui::style::Color;
 use ratatui::{DefaultTerminal, Terminal};
 use tokio::sync::mpsc;
 
-use app::{App, Effect, Msg, ProfileInfo};
+use app::{App, ProfileInfo};
 use auth::AzCli;
 use config::Config;
+use effects::Ctx;
 use fabric::FabricSource;
 use fabric::fake::FakeSource;
 use source::SharedSource;
@@ -54,7 +56,7 @@ struct Args {
     snapshot: Option<String>,
 }
 
-type Sources = Arc<HashMap<String, SharedSource>>;
+type Sources = Arc<effects::Sources>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -142,59 +144,6 @@ fn init_logging() {
         .try_init();
 }
 
-/// Carry out one effect. Returns the message to feed back into the app, if any.
-async fn perform(effect: Effect, sources: Sources, open_urls: bool) -> Option<Msg> {
-    let source = |name: &str| {
-        sources
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("no source for profile {name}"))
-    };
-    match effect {
-        Effect::Fetch {
-            profile,
-            generation,
-            query,
-            force,
-        } => {
-            let result = match source(&profile) {
-                Ok(s) => s.fetch(query, force).await.map_err(|e| format!("{e:#}")),
-                Err(e) => Err(e),
-            };
-            Some(Msg::Rows { generation, result })
-        }
-        Effect::Definition {
-            profile,
-            workspace,
-            item,
-            title,
-        } => {
-            let result = match source(&profile) {
-                Ok(s) => s
-                    .definition(workspace, item)
-                    .await
-                    .map_err(|e| format!("{e:#}")),
-                Err(e) => Err(e),
-            };
-            Some(Msg::Detail { title, result })
-        }
-        Effect::Act { profile, action } => {
-            let result = match source(&profile) {
-                Ok(s) => s.act(action.clone()).await.map_err(|e| format!("{e:#}")),
-                Err(e) => Err(e),
-            };
-            journal::append(config::state_dir().as_deref(), &profile, &action, &result);
-            Some(Msg::Acted { action, result })
-        }
-        Effect::Open(url) => {
-            if open_urls && let Err(e) = open::that_detached(&url) {
-                tracing::warn!("opening {url}: {e}");
-            }
-            None
-        }
-    }
-}
-
 async fn run(
     terminal: &mut DefaultTerminal,
     mut app: App,
@@ -204,11 +153,16 @@ async fn run(
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let ctx = Arc::new(Ctx {
+        open_urls: true,
+        journal_dir: config::state_dir(),
+        download_dir: std::env::current_dir().ok(),
+    });
     loop {
         for effect in app.take_effects() {
-            let (tx, sources) = (tx.clone(), sources.clone());
+            let (tx, sources, ctx) = (tx.clone(), sources.clone(), ctx.clone());
             tokio::spawn(async move {
-                if let Some(msg) = perform(effect, sources, true).await {
+                if let Some(msg) = effects::perform(effect, &sources, &ctx).await {
                     let _ = tx.send(msg);
                 }
             });
@@ -254,14 +208,16 @@ fn split_steps(steps: &str) -> Vec<String> {
 
 /// Headless mode: replay steps, wait for every fetch, print one rendered frame.
 async fn snapshot(mut app: App, sources: Sources, steps: &str) -> Result<()> {
+    // No browser, no journal, no downloads: a snapshot only looks.
     async fn settle(app: &mut App, sources: &Sources) {
+        let ctx = Ctx::default();
         loop {
             let effects = app.take_effects();
             if effects.is_empty() {
                 return;
             }
             for e in effects {
-                if let Some(msg) = perform(e, sources.clone(), false).await {
+                if let Some(msg) = effects::perform(e, sources, &ctx).await {
                     app.on_msg(msg);
                 }
             }

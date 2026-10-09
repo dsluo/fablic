@@ -10,6 +10,10 @@ use crate::app::App;
 use crate::resources::Kind;
 use crate::theme::Theme;
 
+const LOGO_W: u16 = 20;
+/// Width of one column of key hints.
+const HINT_W: u16 = 18;
+
 const LOGO: &[&str] = &[
     "  ┌─┐┌─┐┌┐ ┬  ┬┌─┐",
     "  ├┤ ├─┤├┴┐│  ││  ",
@@ -35,7 +39,7 @@ pub fn hints(kind: Kind) -> Vec<(&'static str, &'static str)> {
             ("s", "schedules"),
         ],
         Kind::Schedules => &[("r", "run now")],
-        Kind::OneLake => &[("enter", "open")],
+        Kind::OneLake => &[("enter", "open"), ("s", "table schema"), ("D", "download")],
         _ => &[],
     };
     let global = [
@@ -60,7 +64,6 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let logo_w = if inner.width >= 100 { 20 } else { 0 };
     // Wide enough for the longest value, but leave at least half for hints and logo.
     let longest = [
         app.frame.query.scope.label().chars().count(),
@@ -70,6 +73,12 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     .max()
     .unwrap_or(0) as u16;
     let info_w = (longest + 12).clamp(40, inner.width / 2);
+    // The logo goes first when space is short: hints matter more.
+    let logo_w = if inner.width.saturating_sub(info_w + LOGO_W) >= 2 * HINT_W {
+        LOGO_W
+    } else {
+        0
+    };
     let [info, keys, logo] = Layout::horizontal([
         Constraint::Length(info_w),
         Constraint::Min(0),
@@ -111,7 +120,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     f.render_widget(Paragraph::new(lines), info);
 
     // Hints fill fixed-width columns top to bottom, as many columns as fit.
-    let col_w = 18u16;
+    let col_w = HINT_W;
     let rows = keys.height.max(1) as usize;
     let cols = (keys.width / col_w).max(1) as usize;
     let mut grid: Vec<Vec<Span>> = vec![Vec::new(); rows];

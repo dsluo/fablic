@@ -1,0 +1,26 @@
+---
+source: src/ui/mod.rs
+expression: render(&mut app)
+---
+"╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│Profile   fake                                        <enter> open      <?> help                            │"
+"│Account   me@example.com                              <s> table schema  <d> describe                        │"
+"│Scope     Urban1 Bronze › bronze_lh (Lakehouse) › File<D> download      <esc> back                          │"
+"│Resource  onelake                                     <:> command       <ctrl-p> profile                    │"
+"│Count     3                                           </> filter        <ctrl-r> refresh                    │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"╭──────────────────────── onelake(Urban1 Bronze › bronze_lh (Lakehouse) › Files)[3] ─────────────────────────╮"
+"│NAME             KIND  SIZE    MODIFIED                                                                     │"
+"│▸ raw            dir           2026-10-09 05:12                                                             │"
+"│extract.parquet  file  8.8 KB  2026-10-09 05:12                                                             │"
+"│readme.txt       file  58 B    2026-10-09 05:12                                                             │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"workspaces › items › onelake › onelake                                                                        "
+"↳ Urban1 Bronze › bronze_lh (Lakehouse) › Files                                                               "

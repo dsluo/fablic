@@ -5,6 +5,7 @@ mod actions;
 mod command;
 mod jobs;
 mod navigation;
+mod onelake;
 mod profiles;
 
 use std::collections::HashMap;
@@ -50,16 +51,43 @@ pub enum Effect {
         /// Bypass caches in the source (explicit refresh, live views).
         force: bool,
     },
-    Definition {
+    /// Fill the detail view titled `title`.
+    Detail {
+        profile: String,
+        title: String,
+        request: DetailRequest,
+    },
+    /// Save a OneLake file locally.
+    Download {
         profile: String,
         workspace: String,
         item: String,
-        title: String,
+        path: String,
     },
     Open(String),
     Act {
         profile: String,
         action: Action,
+    },
+}
+
+/// What the detail view should show once fetched.
+#[derive(Debug)]
+pub enum DetailRequest {
+    Definition {
+        workspace: String,
+        item: String,
+    },
+    Preview {
+        workspace: String,
+        item: String,
+        path: String,
+        total: Option<u64>,
+    },
+    Schema {
+        workspace: String,
+        item: String,
+        path: String,
     },
 }
 
@@ -77,6 +105,8 @@ pub enum Msg {
         action: Action,
         result: Result<String, String>,
     },
+    /// Something worth a line in the status bar.
+    Status(Level, String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +300,7 @@ impl App {
                 };
             }
             Msg::Acted { action, result } => self.on_acted(action, result),
+            Msg::Status(level, text) => self.flash(level, text),
         }
     }
 
@@ -349,7 +380,9 @@ impl App {
             (KeyCode::Char('F'), false) => self.toggle_flat(),
             (KeyCode::Char('r'), false) => self.run_job(),
             (KeyCode::Char('k'), true) => self.cancel_job(),
+            (KeyCode::Char('s'), false) if self.kind() == Kind::OneLake => self.schema(),
             (KeyCode::Char('s'), false) => self.goto(Kind::Schedules, None, false),
+            (KeyCode::Char('D'), false) => self.download(),
             (KeyCode::Char('p'), true) => self.open_profiles(),
             (KeyCode::Char('r'), true) => {
                 self.refresh(true);
@@ -433,7 +466,6 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::fabric::fake::FakeSource;
-    use crate::source::DataSource;
 
     pub fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
@@ -451,44 +483,26 @@ pub(crate) mod tests {
         app
     }
 
-    /// Run queued fetches against `FakeSource` until nothing is pending.
+    /// Carry out queued effects against `FakeSource` until nothing is pending.
     pub fn settle(app: &mut App) {
         let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .unwrap();
+        let src: crate::source::SharedSource = std::sync::Arc::new(FakeSource);
+        let sources = std::collections::HashMap::from([(app.profile.name.clone(), src)]);
+        let ctx = crate::effects::Ctx {
+            download_dir: Some(".".into()),
+            ..Default::default()
+        };
         loop {
             let effects = app.take_effects();
             if effects.is_empty() {
                 break;
             }
             for e in effects {
-                match e {
-                    Effect::Fetch {
-                        generation, query, ..
-                    } => {
-                        let result = rt
-                            .block_on(FakeSource.fetch(query, false))
-                            .map_err(|e| e.to_string());
-                        app.on_msg(Msg::Rows { generation, result });
-                    }
-                    Effect::Definition {
-                        workspace,
-                        item,
-                        title,
-                        ..
-                    } => {
-                        let result = rt
-                            .block_on(FakeSource.definition(workspace, item))
-                            .map_err(|e| e.to_string());
-                        app.on_msg(Msg::Detail { title, result });
-                    }
-                    Effect::Act { action, .. } => {
-                        let result = rt
-                            .block_on(FakeSource.act(action.clone()))
-                            .map_err(|e| e.to_string());
-                        app.on_msg(Msg::Acted { action, result });
-                    }
-                    Effect::Open(_) => {}
+                if let Some(msg) = rt.block_on(crate::effects::perform(e, &sources, &ctx)) {
+                    app.on_msg(msg);
                 }
             }
         }

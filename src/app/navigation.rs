@@ -90,6 +90,7 @@ impl App {
                 self.flash(Level::Info, format!("↳ {}", q.scope.label()));
                 self.push_query(q);
             }
+            None if self.kind() == Kind::OneLake => self.preview(),
             None => self.describe(),
         }
     }
@@ -102,9 +103,11 @@ impl App {
         let scope = match kind.needs() {
             ScopeNeed::None => Scope::default(),
             ScopeNeed::Optional if all => Scope::default(),
+            // Listing kinds search the folder being viewed, not a highlighted
+            // subfolder; a highlighted workspace still picks the workspace.
             ScopeNeed::Optional => Scope {
                 workspace: scope.workspace,
-                folder: scope.folder,
+                folder: self.frame.query.scope.folder.clone(),
                 ..Scope::default()
             },
             ScopeNeed::Workspace => match scope.workspace {
@@ -275,7 +278,7 @@ mod tests {
         press(&mut app, KeyCode::Char('j')); // bronze_lh
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.kind(), Kind::OneLake);
-        press(&mut app, KeyCode::Char('j')); // Files
+        // Files sorts first (directories, by name), so it's already selected.
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.frame.query.scope.path.as_deref(), Some("Files"));
         // a file opens the detail view instead of drilling
@@ -298,6 +301,15 @@ mod tests {
         assert_eq!(app.kind(), Kind::Items);
         assert_eq!(app.frame.query.item_type.as_deref(), Some("Notebook"));
         assert_eq!(app.frame.query.scope.workspace.as_ref().unwrap().id, "ws-1");
+        assert_eq!(names(&app), ["transform_silver", "ingest_shop"]);
+    }
+
+    #[test]
+    fn listing_kinds_ignore_a_highlighted_folder() {
+        let mut app = into_bronze(); // "ingest" folder is highlighted
+        type_str(&mut app, ":nb");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.frame.query.scope.folder.is_none());
         assert_eq!(names(&app), ["transform_silver", "ingest_shop"]);
     }
 
