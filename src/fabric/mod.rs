@@ -173,7 +173,7 @@ impl Inner {
                 let ws = ws.context("jobs need a workspace")?;
                 match &q.scope.item {
                     Some(item) => {
-                        let list = self.runs(ws, &item.id).await?;
+                        let list = self.runs(ws, &item.id, &item.item_type).await?;
                         rows::jobs(&list, None, chrono::Utc::now())
                     }
                     None => self.workspace_runs(ws, force).await?,
@@ -205,13 +205,37 @@ impl Inner {
         })
     }
 
-    async fn runs(&self, ws: &str, item: &str) -> Result<Vec<Value>> {
-        self.client
-            .list(
-                &format!("workspaces/{ws}/items/{item}/jobs/instances"),
-                "value",
-            )
-            .await
+    /// Runs of one item. Notebook and Spark job runs are checked against
+    /// their Spark sessions, which are the only record of a user cancelling
+    /// them; if that lookup fails the runs are shown as Fabric reports them.
+    async fn runs(&self, ws: &str, item: &str, item_type: &str) -> Result<Vec<Value>> {
+        let instances = format!("workspaces/{ws}/items/{item}/jobs/instances");
+        let sessions = match item_type {
+            "Notebook" => Some(format!("workspaces/{ws}/notebooks/{item}/livySessions")),
+            "SparkJobDefinition" => Some(format!(
+                "workspaces/{ws}/sparkJobDefinitions/{item}/livySessions"
+            )),
+            _ => None,
+        };
+        let recent_sessions = async {
+            // The first page holds the newest sessions, which is enough.
+            match &sessions {
+                Some(path) => self.client.get(path).await.map(Some),
+                None => Ok(None),
+            }
+        };
+        let (runs, sessions) =
+            futures::join!(self.client.list(&instances, "value"), recent_sessions);
+        let mut runs = runs?;
+        match sessions {
+            Ok(Some(page)) => {
+                let list = page.get("value").and_then(Value::as_array);
+                rows::mark_cancelled(&mut runs, list.map_or(&[], Vec::as_slice));
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(item, "listing Spark sessions: {e:#}"),
+        }
+        Ok(runs)
     }
 
     /// Runs of every runnable item in a workspace. There is no workspace-wide
@@ -228,7 +252,8 @@ impl Inner {
         let results: Vec<(Value, Result<Vec<Value>>)> = futures::stream::iter(runnable)
             .map(|item| async move {
                 let id = item["id"].as_str().unwrap_or_default().to_owned();
-                let res = self.runs(ws, &id).await;
+                let kind = item["type"].as_str().unwrap_or_default().to_owned();
+                let res = self.runs(ws, &id, &kind).await;
                 (item, res)
             })
             .buffer_unordered(JOB_FAN_OUT)

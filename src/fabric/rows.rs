@@ -403,6 +403,26 @@ pub fn jobs(list: &[Value], item: Option<&Value>, now: DateTime<Utc>) -> Vec<Row
     rows
 }
 
+/// Fabric reports a notebook or Spark job run that a user cancelled as
+/// `Completed`; only its Spark (Livy) session records the cancellation. Mark
+/// those runs `Cancelled`, keeping the session's reason on the run.
+pub fn mark_cancelled(runs: &mut [Value], sessions: &[Value]) {
+    for run in runs.iter_mut() {
+        if !matches!(s(run, "status"), "Completed" | "Succeeded") {
+            continue;
+        }
+        let reason = sessions
+            .iter()
+            .find(|l| s(l, "jobInstanceId") == s(run, "id"))
+            .map(|l| s(l, "cancellationReason"))
+            .filter(|r| r.starts_with("User cancelled"));
+        if let Some(r) = reason {
+            run["cancellationReason"] = r.into();
+            run["status"] = "Cancelled".into();
+        }
+    }
+}
+
 /// Newest first; runs that haven't started have no start time and go on top.
 /// Also used to merge per-item lists into one workspace-wide list.
 pub fn sort_runs(rows: &mut [Row]) {
@@ -693,6 +713,29 @@ mod tests {
 
     fn names(rows: &[Row]) -> Vec<&str> {
         rows.iter().map(|r| r.name.as_str()).collect()
+    }
+
+    #[test]
+    fn user_cancelled_spark_runs_show_as_cancelled() {
+        let mut runs = vec![
+            json!({"id": "a", "status": "Completed"}),
+            json!({"id": "b", "status": "Completed"}),
+            json!({"id": "c", "status": "Failed"}),
+        ];
+        let sessions = [
+            json!({"jobInstanceId": "a", "state": "Succeeded",
+                   "cancellationReason": "User cancelled the Spark session"}),
+            json!({"jobInstanceId": "b", "state": "Succeeded",
+                   "cancellationReason": "System stopped the Spark session upon completion of the notebook run"}),
+            json!({"jobInstanceId": "c", "cancellationReason": "User cancelled the Spark session"}),
+        ];
+        mark_cancelled(&mut runs, &sessions);
+        let status: Vec<&str> = runs.iter().map(|r| s(r, "status")).collect();
+        assert_eq!(status, ["Cancelled", "Completed", "Failed"]);
+        assert_eq!(
+            s(&runs[0], "cancellationReason"),
+            "User cancelled the Spark session"
+        );
     }
 
     #[test]
