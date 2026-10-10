@@ -3,6 +3,23 @@
 Release Please maintains this file from Conventional Commits when preparing a
 release PR.
 
+## [0.1.1](https://github.com/dsluo/fablic/compare/0.1.0...0.1.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **ci:** skip implicit tool installation in workflow tasks ([#5](https://github.com/dsluo/fablic/issues/5)) ([002bdb0](https://github.com/dsluo/fablic/commit/002bdb0cc03f45d531688b6570c2bae4636f73da))
+
+
+### Documentation
+
+* **readme:** move Why? section above installation ([6e93f8e](https://github.com/dsluo/fablic/commit/6e93f8e122ecaac56bde003b5620606f048a1d3f))
+
+
+### Continuous Integration
+
+* build every release target on PRs and add Windows releases ([#6](https://github.com/dsluo/fablic/issues/6)) ([c6d459a](https://github.com/dsluo/fablic/commit/c6d459a308eba3fbb5e69892bd5b20e127d7b849))
+
 ## 0.1.0 (2026-10-10)
 
 
