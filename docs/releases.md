@@ -19,6 +19,11 @@ The CI workflow runs `mise run test`, `mise run lint`, and
 release PRs. It also runs on pushes to `main` and merge queue events. Tests and
 builds use the committed Cargo lockfile.
 
+Each job installs its required tools explicitly, then runs tasks with
+`mise run --skip-tools`. This keeps task execution from installing unrelated
+development tools such as `cargo-insta`, whose prebuilt binaries do not cover
+every release target.
+
 Merge the release PR when its version and changelog are ready and its checks
 pass. Release Please then creates the tag and publishes the GitHub Release.
 The `Release` workflow checks the tag against `Cargo.toml` and runs the CI
