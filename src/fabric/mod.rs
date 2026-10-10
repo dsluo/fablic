@@ -336,6 +336,21 @@ impl Inner {
                 c.call(Method::POST, &path, Some(body)).await?;
                 Ok(format!("created folder {name}"))
             }
+            Action::NewItem {
+                workspace,
+                folder,
+                item_type,
+                name,
+            } => {
+                let mut body = json!({"displayName": name, "type": item_type});
+                if let Some(f) = folder {
+                    body["folderId"] = f.id.clone().into();
+                }
+                // 201 with the item, or 202 while it's provisioned.
+                let path = format!("workspaces/{workspace}/items");
+                c.post_lro(&path, Some(body)).await?;
+                Ok(format!("created {item_type} {name}"))
+            }
             Action::RenameFolder {
                 workspace,
                 folder,
@@ -843,6 +858,31 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_items_post_type_and_folder() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/workspaces/w1/items"))
+            .and(wiremock::matchers::body_json(
+                json!({"displayName": "lh2", "type": "Lakehouse", "folderId": "f1"}),
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "new"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let msg = src
+            .act(Action::NewItem {
+                workspace: "w1".into(),
+                folder: Some(folder("f1", "ingest")),
+                item_type: "Lakehouse".into(),
+                name: "lh2".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(msg, "created Lakehouse lh2");
     }
 
     #[tokio::test]

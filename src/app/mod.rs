@@ -397,7 +397,7 @@ impl App {
             (KeyCode::Char('e'), false) => self.rename(),
             (KeyCode::Char('E'), false) => self.edit_description(),
             (KeyCode::Char('d'), true) => self.delete(),
-            (KeyCode::Char('n'), false) => self.new_folder(),
+            (KeyCode::Char('n'), false) => self.create(),
             (KeyCode::Char('m'), false) => self.mark_move(),
             (KeyCode::Char('p'), false) => self.paste(),
             (KeyCode::Char('a'), false) => self.add_role(),

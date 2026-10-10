@@ -148,6 +148,13 @@ pub enum Action {
         parent: Option<Ref>,
         name: String,
     },
+    /// An item made from a name alone; `folder` is `None` for the root.
+    NewItem {
+        workspace: String,
+        folder: Option<Ref>,
+        item_type: String,
+        name: String,
+    },
     RenameFolder {
         workspace: String,
         folder: Ref,
@@ -214,6 +221,12 @@ impl Action {
             Action::NewFolder { parent, name, .. } => {
                 format!("create folder \"{name}\" in {}", place(parent))
             }
+            Action::NewItem {
+                folder,
+                item_type,
+                name,
+                ..
+            } => format!("create {item_type} \"{name}\" in {}", place(folder)),
             Action::RenameFolder { folder, name, .. } => {
                 format!("rename folder {} to \"{name}\"", folder.name)
             }
@@ -240,6 +253,7 @@ impl Action {
             | Action::DescribeItem { workspace, .. }
             | Action::DeleteItem { workspace, .. }
             | Action::NewFolder { workspace, .. }
+            | Action::NewItem { workspace, .. }
             | Action::RenameFolder { workspace, .. }
             | Action::DeleteFolder { workspace, .. }
             | Action::Move { workspace, .. }
@@ -262,6 +276,12 @@ impl Action {
             Action::NewFolder { parent, .. } => {
                 format!("parent={}", parent.as_ref().map_or("root", |p| &p.id))
             }
+            Action::NewItem {
+                folder, item_type, ..
+            } => format!(
+                "folder={} type={item_type}",
+                folder.as_ref().map_or("root", |f| &f.id)
+            ),
             Action::RenameFolder { folder, .. } | Action::DeleteFolder { folder, .. } => {
                 format!("folder={}", folder.id)
             }

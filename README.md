@@ -45,7 +45,7 @@ color = "#89b4fa"
 | `D` | download a OneLake file to the current directory |
 | `e` / `E` | rename an item or folder (in roles: change the role) / edit an item's description |
 | `ctrl-d` | delete an item or folder (type its name to confirm), a role assignment or a shortcut |
-| `n` | new folder in the folder on screen |
+| `n` | new folder or item (lakehouse, notebook, pipeline, ...) in the folder on screen |
 | `m` then `p` | pick up an item or folder, open the destination folder, drop it there |
 | `a` | in roles: give a user, group or app a role (email, object id, or exact group/app name) |
 | `ctrl-p` | switch profile |

@@ -167,11 +167,52 @@ pub const ITEM_TYPE_ALIASES: &[(&str, &str)] = &[
     ("env", "Environment"),
 ];
 
-fn item_type_for_alias(w: &str) -> Option<&'static str> {
+pub fn item_type_for_alias(w: &str) -> Option<&'static str> {
     ITEM_TYPE_ALIASES
         .iter()
         .find(|(a, _)| *a == w)
         .map(|(_, t)| *t)
+}
+
+/// What `n` can create: a folder, or an item type Fabric creates from a
+/// name alone (types such as reports need a full definition).
+pub const CREATABLE: &[&str] = &[
+    "Folder",
+    "Lakehouse",
+    "Notebook",
+    "DataPipeline",
+    "Warehouse",
+    "Environment",
+    "SparkJobDefinition",
+    "Eventhouse",
+    "Eventstream",
+    "KQLQueryset",
+    "CopyJob",
+    "VariableLibrary",
+];
+
+/// Creatable types matching what was typed: an exact name or alias wins,
+/// otherwise every type whose name or alias starts with it.
+pub fn creatable_matches(typed: &str) -> Vec<&'static str> {
+    let t = typed.trim().to_lowercase();
+    let exact = CREATABLE
+        .iter()
+        .copied()
+        .find(|c| c.to_lowercase() == t)
+        .or_else(|| item_type_for_alias(&t).filter(|a| CREATABLE.contains(a)));
+    if let Some(e) = exact {
+        return vec![e];
+    }
+    CREATABLE
+        .iter()
+        .copied()
+        .filter(|c| {
+            c.to_lowercase().starts_with(&t)
+                || ITEM_TYPE_ALIASES
+                    .iter()
+                    .any(|(a, ty)| ty == c && a.starts_with(&t))
+        })
+        .collect()
 }
 
 /// Item types that can be run on demand, with the job type Fabric uses for
@@ -281,5 +322,16 @@ mod tests {
         for k in Kind::ALL {
             assert!(!k.columns().is_empty(), "{k:?}");
         }
+    }
+
+    #[test]
+    fn creatable_types_by_name_alias_or_prefix() {
+        use super::creatable_matches as m;
+        assert_eq!(m("lh"), ["Lakehouse"]);
+        assert_eq!(m("NOTEBOOK"), ["Notebook"]);
+        assert_eq!(m("f"), ["Folder"]);
+        assert_eq!(m("pip"), ["DataPipeline"]);
+        assert_eq!(m("event"), ["Eventhouse", "Eventstream"]);
+        assert!(m("report").is_empty(), "reports need a definition");
     }
 }

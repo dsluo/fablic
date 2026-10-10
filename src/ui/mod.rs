@@ -187,7 +187,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("s", "schedules; in OneLake, a table's schema"),
     ("e / E", "rename; change a role / edit description"),
     ("ctrl-d", "delete (items and folders: type the name)"),
-    ("n", "new folder here"),
+    ("n", "new item or folder here"),
     ("m then p", "pick up an item or folder, drop it here"),
     ("a", "in roles: give someone a role"),
     ("D", "download a OneLake file to ./"),

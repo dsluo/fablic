@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::navigation::{folder_ref, item_ref, workspace_of};
 use super::{App, Effect, Level, Mode};
-use crate::resources::Kind;
+use crate::resources::{CREATABLE, Kind, creatable_matches};
 use crate::source::{Action, ItemRef, Movable, ROLES, Ref};
 
 /// What a typed prompt is collecting.
@@ -20,9 +20,16 @@ pub enum Purpose {
         workspace: String,
         item: ItemRef,
     },
-    NewFolder {
+    /// First step of `n`: a folder or which item type.
+    NewType {
         workspace: String,
         parent: Option<Ref>,
+    },
+    /// Second step: its name.
+    NewName {
+        workspace: String,
+        parent: Option<Ref>,
+        item_type: String,
     },
     RenameFolder {
         workspace: String,
@@ -59,6 +66,22 @@ pub struct Prompt {
 pub struct Moving {
     pub workspace: String,
     pub what: Movable,
+}
+
+fn place(folder: &Option<Ref>) -> String {
+    match folder {
+        Some(f) => f.name.clone(),
+        None => "the workspace root".into(),
+    }
+}
+
+/// The types still matching what's typed, for the line under the input.
+fn type_hint(typed: &str) -> String {
+    match creatable_matches(typed)[..] {
+        [] => "nothing matches; try lh, nb, pl, folder, …".into(),
+        [one] => format!("{one} · enter picks it"),
+        ref many => format!("{} · tab completes", many.join(" / ")),
+    }
 }
 
 /// `v` -> Viewer, `contrib` -> Contributor; `None` unless exactly one matches.
@@ -190,21 +213,38 @@ impl App {
         );
     }
 
-    /// `n`: a new folder here.
-    pub(super) fn new_folder(&mut self) {
+    /// `n`: a new folder or item in the folder on screen. A view of one
+    /// item type (`:nb`) skips straight to the name.
+    pub(super) fn create(&mut self) {
         let (Kind::Items, Some(workspace)) = (self.kind(), self.view_workspace()) else {
-            return self.flash(Level::Warn, "n creates a folder in a workspace's items");
+            return self.flash(Level::Warn, "n creates things in a workspace's items");
         };
         let parent = self.frame.query.scope.folder.clone();
-        let title = match &parent {
-            Some(p) => format!("new folder in {}", p.name),
-            None => "new folder".to_owned(),
-        };
+        match self.frame.query.item_type.clone() {
+            Some(t) if CREATABLE.contains(&t.as_str()) => self.ask_name(workspace, parent, t),
+            _ => {
+                let title = format!("new … in {}", place(&parent));
+                self.ask(
+                    title,
+                    &type_hint(""),
+                    "",
+                    Purpose::NewType { workspace, parent },
+                )
+            }
+        }
+    }
+
+    fn ask_name(&mut self, workspace: String, parent: Option<Ref>, item_type: String) {
+        let title = format!("new {item_type} in {}", place(&parent));
         self.ask(
             title,
-            "enter creates · esc cancels",
+            "its name · enter creates · esc cancels",
             "",
-            Purpose::NewFolder { workspace, parent },
+            Purpose::NewName {
+                workspace,
+                parent,
+                item_type,
+            },
         );
     }
 
@@ -361,7 +401,14 @@ impl App {
                 self.mode = Mode::Table;
                 self.flash(Level::Info, "cancelled");
             }
-            KeyCode::Enter => self.submit(),
+            KeyCode::Enter => return self.submit(),
+            KeyCode::Tab => {
+                if let Some(Purpose::NewType { .. }) = self.prompt.as_ref().map(|p| &p.purpose)
+                    && let Some(first) = creatable_matches(&self.input).first()
+                {
+                    self.input = first.to_string();
+                }
+            }
             KeyCode::Backspace => {
                 self.input.pop();
             }
@@ -370,6 +417,11 @@ impl App {
             }
             KeyCode::Char(c) => self.input.push(c),
             _ => {}
+        }
+        if let Some(p) = &mut self.prompt
+            && matches!(p.purpose, Purpose::NewType { .. })
+        {
+            p.hint = type_hint(&self.input);
         }
     }
 
@@ -399,14 +451,34 @@ impl App {
                 item,
                 description: text,
             },
-            Purpose::NewFolder { workspace, parent } => {
+            Purpose::NewType { workspace, parent } => {
+                let [item_type] = creatable_matches(&text)[..] else {
+                    return self.flash(Level::Warn, "type more until one type is left");
+                };
+                self.prompt = None;
+                return self.ask_name(workspace, parent, item_type.to_owned());
+            }
+            Purpose::NewName {
+                workspace,
+                parent,
+                item_type,
+            } => {
                 if text.is_empty() {
                     return self.flash(Level::Warn, need("the name"));
                 }
-                Action::NewFolder {
-                    workspace,
-                    parent,
-                    name: text,
+                if item_type == "Folder" {
+                    Action::NewFolder {
+                        workspace,
+                        parent,
+                        name: text,
+                    }
+                } else {
+                    Action::NewItem {
+                        workspace,
+                        folder: parent,
+                        item_type,
+                        name: text,
+                    }
                 }
             }
             Purpose::RenameFolder { workspace, folder } => {
@@ -574,6 +646,8 @@ mod tests {
 
         press(&mut app, KeyCode::Enter); // into ingest
         app.on_key(key(KeyCode::Char('n')));
+        type_str(&mut app, "fol");
+        app.on_key(key(KeyCode::Enter));
         type_str(&mut app, "staging");
         app.on_key(key(KeyCode::Enter));
         let a = acts(&mut app);
@@ -582,6 +656,66 @@ mod tests {
         };
         assert_eq!(parent.as_ref().map(|p| p.id.as_str()), Some("f-1"));
         assert_eq!(name, "staging");
+    }
+
+    #[test]
+    fn new_item_picks_a_type_then_a_name() {
+        let mut app = bronze();
+        press(&mut app, KeyCode::Enter); // into ingest
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(app.prompt.as_ref().unwrap().title, "new … in ingest");
+        type_str(&mut app, "e");
+        let hint = &app.prompt.as_ref().unwrap().hint;
+        assert!(
+            hint.starts_with("Environment / Eventhouse / Eventstream"),
+            "{hint}"
+        );
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.input, "e", "an ambiguous type waits for more");
+        ctrl(&mut app, 'u');
+        type_str(&mut app, "lh");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            app.prompt.as_ref().unwrap().title,
+            "new Lakehouse in ingest"
+        );
+        type_str(&mut app, "silver_lh");
+        app.on_key(key(KeyCode::Enter));
+        let a = acts(&mut app);
+        let [
+            Action::NewItem {
+                folder,
+                item_type,
+                name,
+                ..
+            },
+        ] = &a[..]
+        else {
+            panic!("{a:?}");
+        };
+        assert_eq!(folder.as_ref().map(|f| f.id.as_str()), Some("f-1"));
+        assert_eq!(
+            (item_type.as_str(), name.as_str()),
+            ("Lakehouse", "silver_lh")
+        );
+    }
+
+    #[test]
+    fn tab_completes_the_type_and_type_views_skip_it() {
+        let mut app = bronze();
+        app.on_key(key(KeyCode::Char('n')));
+        type_str(&mut app, "eventh");
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.input, "Eventhouse");
+        app.on_key(key(KeyCode::Esc));
+
+        type_str(&mut app, ":nb");
+        press(&mut app, KeyCode::Enter);
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(
+            app.prompt.as_ref().unwrap().title,
+            "new Notebook in the workspace root"
+        );
     }
 
     #[test]
