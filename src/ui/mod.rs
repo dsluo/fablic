@@ -13,7 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, Paragraph};
 
-use crate::app::{App, Level, Mode, Purpose};
+use crate::app::{App, Level, Mode, Prompt, Purpose};
 use crate::theme::Theme;
 
 const STATUS_TTL: Duration = Duration::from_secs(5);
@@ -295,10 +295,7 @@ fn draw_input(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
         app.input.chars().skip(n.saturating_sub(room)).collect()
     };
     let mut lines = vec![
-        Line::styled(
-            p.title.clone(),
-            Style::new().fg(t.text).add_modifier(Modifier::BOLD),
-        ),
+        prompt_title(p, t),
         Line::from(vec![
             Span::styled("> ", Style::new().fg(t.accent)),
             Span::styled(typed.clone(), Style::new().fg(t.text)),
@@ -333,6 +330,22 @@ fn draw_input(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
     f.render_widget(Paragraph::new(lines).block(block), area);
     let x = inner.x + 2 + typed.chars().count() as u16;
     f.set_cursor_position((x.min(inner.right().saturating_sub(1)), inner.y + 1));
+}
+
+/// The prompt's title, with the folder it writes into in the folder colour.
+fn prompt_title(p: &Prompt, t: &Theme) -> Line<'static> {
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let split = p
+        .place
+        .as_deref()
+        .and_then(|at| Some((p.title.strip_suffix(at)?, at)));
+    match split {
+        Some((head, at)) => Line::from(vec![
+            Span::styled(head.to_owned(), bold.fg(t.text)),
+            Span::styled(at.to_owned(), bold.fg(t.accent)),
+        ]),
+        None => Line::styled(p.title.clone(), bold.fg(t.text)),
+    }
 }
 
 fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
@@ -507,6 +520,29 @@ mod tests {
         };
         assert_eq!(edges(&before), edges(&after), "same width and top edge");
         insta::assert_snapshot!(after);
+    }
+
+    #[test]
+    fn new_item_title_sets_the_folder_apart() {
+        let mut app = fake_app();
+        steps(
+            &mut app,
+            &[KeyCode::Char('j'), KeyCode::Enter, KeyCode::Enter],
+        );
+        app.on_key(key(KeyCode::Char('n')));
+        let title = prompt_title(app.prompt.as_ref().unwrap(), &Theme::MOCHA);
+        let parts: Vec<(&str, _)> = title
+            .spans
+            .iter()
+            .map(|s| (s.content.as_ref(), s.style.fg))
+            .collect();
+        assert_eq!(
+            parts,
+            [
+                ("new … in ", Some(Theme::MOCHA.text)),
+                ("ingest", Some(Theme::MOCHA.accent))
+            ]
+        );
     }
 
     #[test]

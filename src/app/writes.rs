@@ -61,6 +61,9 @@ pub struct Prompt {
     pub purpose: Purpose,
     /// Highlighted entry of `choices`, for prompts that pick from a list.
     pub choice: usize,
+    /// The folder a new thing lands in, which ends `title` and is drawn
+    /// apart from the rest of it.
+    pub place: Option<String>,
 }
 
 impl Prompt {
@@ -139,6 +142,7 @@ impl App {
             hint: hint.to_owned(),
             purpose,
             choice: 0,
+            place: None,
         });
         self.mode = Mode::Prompt;
     }
@@ -236,14 +240,16 @@ impl App {
         match self.frame.query.item_type.clone() {
             Some(t) if CREATABLE.contains(&t.as_str()) => self.ask_name(workspace, parent, t),
             _ => {
-                let title = format!("new … in {}", place(&parent));
-                self.ask(title, PICK_HINT, "", Purpose::NewType { workspace, parent })
+                let (title, at) = (format!("new … in {}", place(&parent)), place(&parent));
+                self.ask(title, PICK_HINT, "", Purpose::NewType { workspace, parent });
+                self.mark_place(at);
             }
         }
     }
 
     fn ask_name(&mut self, workspace: String, parent: Option<Ref>, item_type: String) {
-        let title = format!("new {item_type} in {}", place(&parent));
+        let at = place(&parent);
+        let title = format!("new {item_type} in {at}");
         self.ask(
             title,
             "its name · enter creates · esc cancels",
@@ -254,6 +260,13 @@ impl App {
                 item_type,
             },
         );
+        self.mark_place(at);
+    }
+
+    fn mark_place(&mut self, at: String) {
+        if let Some(p) = &mut self.prompt {
+            p.place = Some(at);
+        }
     }
 
     /// `ctrl-d`: delete. Items and folders need their name typed.
@@ -524,6 +537,7 @@ impl App {
                     title: format!("role for {text}"),
                     hint: PICK_HINT.into(),
                     choice: 0,
+                    place: None,
                     purpose: Purpose::Role {
                         workspace,
                         principal: Some(text),
