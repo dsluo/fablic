@@ -15,7 +15,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
@@ -25,8 +25,8 @@ use ratatui::{DefaultTerminal, Terminal};
 use tokio::sync::mpsc;
 
 use app::{App, ProfileInfo};
-use auth::AzCli;
-use config::Config;
+use auth::{AzCli, DeviceLogin, Keychain, TokenProvider, device};
+use config::{Config, Login, Profile};
 use effects::Ctx;
 use fabric::FabricSource;
 use fabric::fake::FakeSource;
@@ -54,6 +54,24 @@ struct Args {
     /// Quote a command with arguments: `':nb all'`.
     #[arg(long, value_name = "STEPS", allow_hyphen_values = true)]
     snapshot: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Cmd>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Cmd {
+    /// Sign a `login = "device"` profile in: shows a code to enter at
+    /// microsoft.com/devicelogin and keeps the sign-in in the OS keychain.
+    Login {
+        /// Profile name (or account).
+        profile: String,
+    },
+    /// Forget a device profile's stored sign-in.
+    Logout {
+        /// Profile name (or account).
+        profile: String,
+    },
 }
 
 type Sources = Arc<effects::Sources>;
@@ -62,6 +80,11 @@ type Sources = Arc<effects::Sources>;
 async fn main() -> Result<()> {
     let args = Args::parse();
     init_logging();
+    match &args.command {
+        Some(Cmd::Login { profile }) => return login(profile).await,
+        Some(Cmd::Logout { profile }) => return logout(profile),
+        None => {}
+    }
 
     let (profiles, active, sources) = if args.fake {
         let p = ProfileInfo {
@@ -103,27 +126,102 @@ async fn live_profiles(
     args: &Args,
 ) -> Result<(Vec<ProfileInfo>, usize, HashMap<String, SharedSource>)> {
     let mut config = Config::load(Config::path().as_deref())?;
-    if config.profiles.is_empty() {
-        let accounts = AzCli::accounts()
-            .await
-            .context("listing az accounts for default profiles")?;
-        config = config.with_az_accounts(accounts);
+    if config.wants_az_accounts() {
+        match AzCli::accounts().await {
+            Ok(accounts) => config = config.with_az_accounts(accounts),
+            // Device profiles work without az.
+            Err(e) if !config.profiles.is_empty() => {
+                tracing::info!("no az accounts added: {e:#}")
+            }
+            Err(e) => return Err(e.context("listing az accounts for default profiles")),
+        }
     }
     let active = config.initial(args.profile.as_deref())?;
     let mut sources = HashMap::new();
     let mut profiles = Vec::new();
     for p in config.profiles {
-        let tokens = Arc::new(AzCli::new(&p.account));
+        let tokens = token_provider(&p)?;
+        let account = tokens.account().to_owned();
         let src: SharedSource = Arc::new(FabricSource::new(tokens));
         sources.insert(p.name.clone(), src);
         profiles.push(ProfileInfo {
             color: p.color.as_deref().and_then(|c| Color::from_str(c).ok()),
             readonly: p.readonly || args.readonly,
             name: p.name,
-            account: p.account,
+            account,
         });
     }
     Ok((profiles, active, sources))
+}
+
+fn token_provider(p: &Profile) -> Result<Arc<dyn TokenProvider>> {
+    Ok(match p.login {
+        Login::Az => Arc::new(AzCli::new(p.az_account()?)),
+        Login::Device => Arc::new(device_login(p)),
+    })
+}
+
+fn device_login(p: &Profile) -> DeviceLogin {
+    let settings = device::Settings {
+        tenant: p
+            .tenant
+            .clone()
+            .unwrap_or_else(|| device::DEFAULT_TENANT.into()),
+        client_id: p
+            .client_id
+            .clone()
+            .unwrap_or_else(|| device::DEFAULT_CLIENT_ID.into()),
+        authority: device::AUTHORITY.into(),
+    };
+    DeviceLogin::new(&p.name, p.account.as_deref(), settings, Arc::new(Keychain))
+}
+
+/// The device profile named on the command line.
+fn device_profile(wanted: &str) -> Result<Profile> {
+    let path = Config::path();
+    let config = Config::load(path.as_deref())?;
+    if !config.profiles.iter().any(|p| p.login == Login::Device) {
+        anyhow::bail!(
+            "no profile signs in with fablic's own login. Add one to {}:\n\n\
+             [[profiles]]\n\
+             name = \"{wanted}\"\n\
+             login = \"device\"\n\
+             tenant = \"contoso.onmicrosoft.com\"   # optional",
+            path.map(|p| p.display().to_string())
+                .unwrap_or_else(|| "config.toml".into())
+        );
+    }
+    let i = config.initial(Some(wanted))?;
+    let p = config.profiles[i].clone();
+    if p.login != Login::Device {
+        anyhow::bail!(
+            "profile {} signs in through az; use `az login` for it (or set login = \"device\")",
+            p.name
+        );
+    }
+    Ok(p)
+}
+
+async fn login(wanted: &str) -> Result<()> {
+    let p = device_profile(wanted)?;
+    let login = device_login(&p);
+    let code = login.start().await?;
+    println!("{}", code.message);
+    println!("\n    code: {}\n", code.user_code);
+    if open::that_detached(&code.verification_uri).is_ok() {
+        println!("(opened {} in your browser)", code.verification_uri);
+    }
+    println!("waiting for you to finish signing in…");
+    let account = login.finish(&code).await?;
+    println!("profile {} is signed in as {account}", p.name);
+    Ok(())
+}
+
+fn logout(wanted: &str) -> Result<()> {
+    let p = device_profile(wanted)?;
+    device_login(&p).logout()?;
+    println!("profile {} is signed out", p.name);
+    Ok(())
 }
 
 fn init_logging() {

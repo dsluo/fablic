@@ -7,6 +7,8 @@ fablic                 # start on the default profile
 fablic -p <profile>    # start on a profile (name or az account)
 fablic --readonly      # block every write
 fablic --fake          # built-in fake data, no sign-in needed
+fablic login <profile> # sign a device profile in (see below)
+fablic logout <profile>
 ```
 
 ## Sign-in and profiles
@@ -15,9 +17,9 @@ fablic uses your az CLI login. Each profile is pinned to one az account. Tokens 
 requested with `--subscription`, so the active az context is never changed and
 several identities can be used side by side. Switch with `ctrl-p` or `:ctx <name>`.
 
-With no config file, every account in `az account list --all` becomes a profile.
-To name them, set colours, or mark one read-only, create
-`~/.config/fablic/config.toml` (or `$XDG_CONFIG_HOME/fablic/config.toml`):
+Unless the config file names az profiles itself, every account in
+`az account list --all` becomes a profile. To name them, set colours, or mark one
+read-only, create `~/.config/fablic/config.toml` (or `$XDG_CONFIG_HOME/fablic/config.toml`):
 
 ```toml
 default_profile = "fabric"
@@ -28,6 +30,27 @@ account = "admin123@fabric.example.net"
 readonly = false
 color = "#89b4fa"
 ```
+
+### Signing in without az
+
+For an identity you don't want in az, give the profile `login = "device"` and run
+`fablic login <profile>`. It shows a code to enter at microsoft.com/devicelogin,
+then keeps the sign-in (a refresh token and the account name) in the OS keychain
+under the service `fablic`. `fablic logout <profile>` removes it.
+
+```toml
+[[profiles]]
+name = "partner"
+login = "device"
+tenant = "partner.onmicrosoft.com"   # optional; any work account by default
+client_id = "…"                      # optional; see below
+```
+
+By default this signs in as the Azure CLI's public client, as Microsoft's Azure
+Identity libraries do; it is pre-consented for Fabric, Storage and Graph in most
+tenants. If your tenant blocks it, register your own app with "Allow public client
+flows" and set `client_id`. On Linux the kernel keyring is used, which doesn't
+survive a reboot.
 
 ## Keys
 

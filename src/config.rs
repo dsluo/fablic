@@ -9,6 +9,12 @@
 //! account = "admin123@fabric.example.net"   # az login to use
 //! readonly = false
 //! color = "#89b4fa"                          # optional header colour
+//!
+//! [[profiles]]
+//! name = "partner"
+//! login = "device"                           # fablic's own sign-in: `fablic login partner`
+//! tenant = "partner.onmicrosoft.com"         # optional; any work account by default
+//! client_id = "…"                            # optional; the Azure CLI's public client by default
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -28,11 +34,41 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     pub name: String,
-    /// The az CLI account (UPN) this profile signs in as.
-    pub account: String,
+    /// How the profile gets tokens.
+    #[serde(default)]
+    pub login: Login,
+    /// The account (UPN) this profile signs in as. Required for az; for
+    /// device sign-in it's only a label until the first `fablic login`.
+    pub account: Option<String>,
     #[serde(default)]
     pub readonly: bool,
     pub color: Option<String>,
+    /// Device sign-in only: the Entra tenant (id or domain).
+    pub tenant: Option<String>,
+    /// Device sign-in only: a public client app registration to sign in with.
+    pub client_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Login {
+    /// Tokens from the az CLI's login cache.
+    #[default]
+    Az,
+    /// fablic's own device-code sign-in, kept in the OS keychain.
+    Device,
+}
+
+impl Profile {
+    /// The az account to use, for az profiles.
+    pub fn az_account(&self) -> Result<&str> {
+        self.account.as_deref().with_context(|| {
+            format!(
+                "profile {} signs in with az but names no account; add account = \"you@example.com\"",
+                self.name
+            )
+        })
+    }
 }
 
 impl Config {
@@ -52,18 +88,29 @@ impl Config {
         }
     }
 
-    /// Profiles from the file, or one per cached az account when the file has none.
+    /// Whether the file says which az accounts to use. If not, every cached
+    /// az account becomes a profile (after any device profiles).
+    pub fn wants_az_accounts(&self) -> bool {
+        !self.profiles.iter().any(|p| p.login == Login::Az)
+    }
+
+    /// One profile per cached az account, unless the file names az profiles.
     pub fn with_az_accounts(mut self, accounts: Vec<String>) -> Config {
-        if self.profiles.is_empty() {
-            self.profiles = accounts
+        if self.wants_az_accounts() {
+            let from_az = accounts
                 .into_iter()
                 .map(|account| Profile {
                     name: account.split('@').next().unwrap_or(&account).to_owned(),
-                    account,
+                    login: Login::Az,
+                    account: Some(account),
                     readonly: false,
                     color: None,
+                    tenant: None,
+                    client_id: None,
                 })
-                .collect();
+                .filter(|a| !self.profiles.iter().any(|p| p.name == a.name))
+                .collect::<Vec<_>>();
+            self.profiles.extend(from_az);
         }
         self
     }
@@ -75,7 +122,12 @@ impl Config {
             Some(n) => self
                 .profiles
                 .iter()
-                .position(|p| p.name == n || p.account.eq_ignore_ascii_case(n))
+                .position(|p| {
+                    p.name == n
+                        || p.account
+                            .as_deref()
+                            .is_some_and(|a| a.eq_ignore_ascii_case(n))
+                })
                 .with_context(|| {
                     let names: Vec<&str> = self.profiles.iter().map(|p| p.name.as_str()).collect();
                     format!("no profile named {n} (have: {})", names.join(", "))
@@ -135,9 +187,38 @@ mod tests {
     fn falls_back_to_az_accounts() {
         let c = Config::default().with_az_accounts(vec!["admin1@a.net".into(), "me@b.org".into()]);
         assert_eq!(c.profiles[0].name, "admin1");
-        assert_eq!(c.profiles[1].account, "me@b.org");
+        assert_eq!(c.profiles[1].account.as_deref(), Some("me@b.org"));
         assert_eq!(c.initial(None).unwrap(), 0);
         assert!(Config::default().initial(None).is_err());
+    }
+
+    #[test]
+    fn device_profiles_need_no_account() {
+        let c: Config = toml::from_str(
+            r#"
+            [[profiles]]
+            name = "partner"
+            login = "device"
+            tenant = "partner.onmicrosoft.com"
+            [[profiles]]
+            name = "broken"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.profiles[0].login, Login::Device);
+        assert_eq!(
+            c.profiles[0].tenant.as_deref(),
+            Some("partner.onmicrosoft.com")
+        );
+        assert_eq!(c.profiles[1].login, Login::Az);
+        assert!(c.profiles[1].az_account().is_err());
+
+        // Device profiles alone don't hide the az accounts.
+        let mut only_device = c.clone();
+        only_device.profiles.truncate(1);
+        let merged = only_device.with_az_accounts(vec!["me@b.org".into()]);
+        let names: Vec<&str> = merged.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["partner", "me"]);
     }
 
     #[test]
