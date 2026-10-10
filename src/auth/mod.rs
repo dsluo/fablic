@@ -1,13 +1,11 @@
 //! Access tokens. One `TokenProvider` per profile, each pinned to one identity.
 
 mod az;
-pub mod entra;
 
 use anyhow::Result;
 use futures::future::BoxFuture;
 
-pub use az::AzCli;
-pub use entra::{EntraLogin, Keychain};
+pub use az::{AzCli, login};
 
 pub const FABRIC: &str = "https://api.fabric.microsoft.com";
 /// OneLake (DFS and table APIs) takes storage-audience tokens.

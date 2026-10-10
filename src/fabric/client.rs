@@ -81,7 +81,8 @@ impl Client {
         let msg = body.get("message").and_then(Value::as_str).unwrap_or("");
         match status {
             StatusCode::UNAUTHORIZED => anyhow!(
-                "Fabric rejected the token for {} (401 {code}). Sign in again with `az login`",
+                "Fabric rejected the token for {} (401 {code}). Sign in again with `fablic login {}`",
+                self.tokens.account(),
                 self.tokens.account()
             ),
             StatusCode::FORBIDDEN => anyhow!(
@@ -298,10 +299,7 @@ pub(crate) mod tests {
             .await;
         let c = client(&server).await;
         let e = c.get("a").await.unwrap_err().to_string();
-        assert!(
-            e.contains("me@example.com") && e.contains("az login"),
-            "{e}"
-        );
+        assert!(e.contains("fablic login me@example.com"), "{e}");
         let e = c.get("b").await.unwrap_err().to_string();
         assert_eq!(e, "404 /b: ItemNotFound The item could not be found");
     }

@@ -15,7 +15,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
@@ -25,8 +25,8 @@ use ratatui::{DefaultTerminal, Terminal};
 use tokio::sync::mpsc;
 
 use app::{App, ProfileInfo};
-use auth::{AzCli, EntraLogin, Keychain, TokenProvider, entra};
-use config::{Config, Login, Profile, SavedLogin};
+use auth::AzCli;
+use config::Config;
 use effects::Ctx;
 use fabric::FabricSource;
 use fabric::fake::FakeSource;
@@ -61,29 +61,14 @@ struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 enum Cmd {
-    /// Sign in with fablic's own login (no az needed): opens your browser to
-    /// Microsoft's sign-in page and keeps the sign-in in the OS keychain.
+    /// Sign in with `az login`, then make az's previously active account
+    /// active again so other tools aren't switched over.
     Login {
-        /// Profile name (or account). Needs no config: a new name becomes a
-        /// fablic-login profile.
-        #[arg(default_value = config::DEFAULT_PROFILE)]
-        profile: String,
-        /// Entra tenant (id or domain). Defaults to any work account.
+        /// A profile (or account) to sign in as again; its tenant is used.
+        profile: Option<String>,
+        /// Entra tenant (id or domain) to sign in to.
         #[arg(long)]
         tenant: Option<String>,
-        /// Public client app registration to sign in with.
-        #[arg(long)]
-        client_id: Option<String>,
-        /// Show a code to enter at microsoft.com/devicelogin instead of
-        /// opening a browser (for SSH sessions; some tenants block it).
-        #[arg(long)]
-        device_code: bool,
-    },
-    /// Forget a fablic-login profile's stored sign-in.
-    Logout {
-        /// Profile name (or account).
-        #[arg(default_value = config::DEFAULT_PROFILE)]
-        profile: String,
     },
 }
 
@@ -93,15 +78,8 @@ type Sources = Arc<effects::Sources>;
 async fn main() -> Result<()> {
     let args = Args::parse();
     init_logging();
-    match &args.command {
-        Some(Cmd::Login {
-            profile,
-            tenant,
-            client_id,
-            device_code,
-        }) => return login(profile, tenant.clone(), client_id.clone(), *device_code).await,
-        Some(Cmd::Logout { profile }) => return logout(profile),
-        None => {}
+    if let Some(Cmd::Login { profile, tenant }) = &args.command {
+        return login(profile.as_deref(), tenant.as_deref()).await;
     }
 
     let (profiles, active, sources) = if args.fake {
@@ -143,148 +121,56 @@ async fn main() -> Result<()> {
 async fn live_profiles(
     args: &Args,
 ) -> Result<(Vec<ProfileInfo>, usize, HashMap<String, SharedSource>)> {
-    let logins = config::load_logins(config::logins_path().as_deref());
-    let mut config = Config::load(Config::path().as_deref())?.with_logins(&logins);
-    if config.wants_az_accounts() {
-        match AzCli::accounts().await {
-            Ok(accounts) => config = config.with_az_accounts(accounts),
-            // Device profiles work without az.
-            Err(e) if !config.profiles.is_empty() => {
-                tracing::info!("no az accounts added: {e:#}")
-            }
-            Err(e) => return Err(e.context("listing az accounts for default profiles")),
-        }
+    let mut config = Config::load(Config::path().as_deref())?;
+    if config.profiles.is_empty() {
+        let accounts = AzCli::accounts()
+            .await
+            .context("listing az accounts for default profiles")?;
+        config = config.with_az_accounts(accounts);
     }
     let active = config.initial(args.profile.as_deref())?;
     let mut sources = HashMap::new();
     let mut profiles = Vec::new();
     for p in config.profiles {
-        let tokens = token_provider(&p)?;
-        let account = tokens.account().to_owned();
+        let tokens = Arc::new(AzCli::new(&p.account));
         let src: SharedSource = Arc::new(FabricSource::new(tokens));
         sources.insert(p.name.clone(), src);
         profiles.push(ProfileInfo {
             color: p.color.as_deref().and_then(|c| Color::from_str(c).ok()),
             readonly: p.readonly || args.readonly,
             name: p.name,
-            account,
+            account: p.account,
         });
     }
     Ok((profiles, active, sources))
 }
 
-fn token_provider(p: &Profile) -> Result<Arc<dyn TokenProvider>> {
-    Ok(match p.login {
-        Login::Az => Arc::new(AzCli::new(p.az_account()?)),
-        Login::Entra => Arc::new(entra_login(p)),
-    })
-}
-
-fn entra_login(p: &Profile) -> EntraLogin {
-    let settings = entra::Settings {
-        tenant: p
-            .tenant
-            .clone()
-            .unwrap_or_else(|| entra::DEFAULT_TENANT.into()),
-        client_id: p
-            .client_id
-            .clone()
-            .unwrap_or_else(|| entra::DEFAULT_CLIENT_ID.into()),
-        authority: entra::AUTHORITY.into(),
-    };
-    EntraLogin::new(&p.name, p.account.as_deref(), settings, Arc::new(Keychain))
-}
-
-/// The profile `login`/`logout` act on: one from the config file or an
-/// earlier `fablic login`, or else a new fablic-login profile of that name.
-/// Returns it and whether the config file defines it.
-fn login_profile(wanted: &str) -> Result<(Profile, bool)> {
-    let file = Config::load(Config::path().as_deref())?;
-    let logins = config::load_logins(config::logins_path().as_deref());
-    let in_file = file
-        .initial(Some(wanted))
-        .ok()
-        .map(|i| file.profiles[i].clone());
-    let p = match in_file.clone() {
-        Some(p) => p,
-        None => logins
-            .iter()
-            .find(|l| l.name == wanted)
-            .map(SavedLogin::profile)
-            .unwrap_or_else(|| {
-                SavedLogin {
-                    name: wanted.to_owned(),
-                    tenant: None,
-                    client_id: None,
+/// `fablic login [profile]`: `az login` for that profile's account.
+async fn login(profile: Option<&str>, tenant: Option<&str>) -> Result<()> {
+    let account = match profile {
+        None => None,
+        Some(wanted) => {
+            let config = Config::load(Config::path().as_deref())?;
+            match config.initial(Some(wanted)) {
+                Ok(i) => Some(config.profiles[i].account.clone()),
+                // Not a configured profile: an account, or an az-derived name.
+                Err(_) if wanted.contains('@') => Some(wanted.to_owned()),
+                Err(_) => {
+                    let accounts = AzCli::accounts().await.unwrap_or_default();
+                    let found = accounts
+                        .into_iter()
+                        .find(|a| a.split('@').next() == Some(wanted));
+                    Some(
+                        found
+                            .with_context(|| format!("no profile or az account named {wanted}"))?,
+                    )
                 }
-                .profile()
-            }),
-    };
-    if p.login != Login::Entra {
-        anyhow::bail!(
-            "profile {} signs in through az; use `az login` for it (or set login = \"entra\")",
-            p.name
-        );
-    }
-    Ok((p, in_file.is_some()))
-}
-
-async fn login(
-    wanted: &str,
-    tenant: Option<String>,
-    client_id: Option<String>,
-    device_code: bool,
-) -> Result<()> {
-    let (mut p, in_file) = login_profile(wanted)?;
-    p.tenant = tenant.or(p.tenant);
-    p.client_id = client_id.or(p.client_id);
-    let login = entra_login(&p);
-    let account = if device_code {
-        let code = login.start_device_code().await?;
-        println!("{}", code.message);
-        println!("\n    code: {}\n", code.user_code);
-        if open::that_detached(&code.verification_uri).is_ok() {
-            println!("(opened {} in your browser)", code.verification_uri);
+            }
         }
-        println!("waiting for you to finish signing in…");
-        login.finish_device_code(&code).await?
-    } else {
-        let b = login.start_browser(p.account.as_deref()).await?;
-        if open::that_detached(&b.url).is_ok() {
-            println!("Sign in in the browser window that just opened.");
-            println!("If none did, open this link:\n\n{}\n", b.url);
-        } else {
-            println!("Open this link to sign in:\n\n{}\n", b.url);
-        }
-        println!("waiting for you to finish signing in…");
-        login.finish_browser(b).await?
     };
-    if !in_file {
-        // Remember the profile so the TUI offers it without any config.
-        let path = config::logins_path();
-        let mut logins = config::load_logins(path.as_deref());
-        logins.retain(|l| l.name != p.name);
-        logins.push(SavedLogin {
-            name: p.name.clone(),
-            tenant: p.tenant.clone(),
-            client_id: p.client_id.clone(),
-        });
-        config::save_logins(path.as_deref(), &logins)?;
-    }
-    println!("profile {} is signed in as {account}", p.name);
-    Ok(())
-}
-
-fn logout(wanted: &str) -> Result<()> {
-    let (p, _) = login_profile(wanted)?;
-    entra_login(&p).logout()?;
-    let path = config::logins_path();
-    let mut logins = config::load_logins(path.as_deref());
-    if logins.iter().any(|l| l.name == p.name) {
-        logins.retain(|l| l.name != p.name);
-        config::save_logins(path.as_deref(), &logins)?;
-    }
-    println!("profile {} is signed out", p.name);
+    auth::login(std::path::Path::new("az"), account.as_deref(), tenant).await?;
+    let accounts = AzCli::accounts().await.unwrap_or_default();
+    println!("az is signed in as: {}", accounts.join(", "));
     Ok(())
 }
 

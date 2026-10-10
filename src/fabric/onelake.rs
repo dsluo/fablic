@@ -85,7 +85,8 @@ impl OneLake {
             .to_owned();
         Err(match status {
             StatusCode::UNAUTHORIZED => anyhow!(
-                "OneLake rejected the token for {} (401). Sign in again with `az login`",
+                "OneLake rejected the token for {} (401). Sign in again with `fablic login {}`",
+                self.tokens.account(),
                 self.tokens.account()
             ),
             StatusCode::FORBIDDEN => {

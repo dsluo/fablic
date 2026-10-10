@@ -7,7 +7,7 @@
 //! (e.g. an Azure DevOps login) are left alone.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -38,6 +38,8 @@ struct State {
 struct Account {
     id: String,
     user: User,
+    #[serde(rename = "tenantId", default)]
+    tenant_id: String,
 }
 
 #[derive(Deserialize)]
@@ -90,7 +92,8 @@ impl AzCli {
             .find(|a| a.user.name.eq_ignore_ascii_case(&self.account))
             .ok_or_else(|| {
                 anyhow!(
-                    "az has no login for {}. Run `az login --allow-no-subscriptions` and pick that account",
+                    "az has no login for {}: run `fablic login {}` and sign in as that account",
+                    self.account,
                     self.account
                 )
             })?;
@@ -151,6 +154,67 @@ impl TokenProvider for AzCli {
     fn account(&self) -> &str {
         &self.account
     }
+}
+
+/// `fablic login`: an interactive `az login`, for the tenant az last saw
+/// `account` in, after which the previously active az account is made
+/// active again (az login always switches to the new login, which would
+/// break other tools relying on the active context).
+pub async fn login(az: &Path, account: Option<&str>, tenant: Option<&str>) -> Result<()> {
+    let az = az.to_path_buf();
+    let active = |out: Vec<u8>| -> Option<(String, String)> {
+        let v: serde_json::Value = serde_json::from_slice(&out).ok()?;
+        Some((
+            v["id"].as_str()?.to_owned(),
+            v["user"]["name"].as_str()?.to_owned(),
+        ))
+    };
+    let before = run_az(&az, &["account", "show", "--output", "json"])
+        .await
+        .ok()
+        .and_then(active);
+    let known_tenant = match (tenant, account) {
+        (Some(_), _) | (_, None) => None,
+        (None, Some(acct)) => list_accounts(&az).await.ok().and_then(|list| {
+            list.into_iter()
+                .find(|a| a.user.name.eq_ignore_ascii_case(acct))
+                .map(|a| a.tenant_id)
+                .filter(|t| !t.is_empty())
+        }),
+    };
+    let mut args = vec!["login", "--allow-no-subscriptions"];
+    if let Some(t) = tenant.or(known_tenant.as_deref()) {
+        args.extend(["--tenant", t]);
+    }
+    if let Some(a) = account {
+        println!("Sign in as {a} in the browser window az opens.");
+    }
+    let status = Command::new(&az)
+        .args(&args)
+        .status()
+        .await
+        .with_context(|| format!("running {} (is the Azure CLI installed?)", az.display()))?;
+    if !status.success() {
+        bail!("az login failed");
+    }
+    let Some((id, user)) = before else {
+        return Ok(());
+    };
+    run_az(&az, &["account", "set", "--subscription", &id]).await?;
+    // Tenant-level entries share an id, so `account set` can land on another
+    // account; say so rather than leave a surprise.
+    let now = run_az(&az, &["account", "show", "--output", "json"])
+        .await
+        .ok()
+        .and_then(active);
+    match now {
+        Some((_, u)) if u.eq_ignore_ascii_case(&user) => {}
+        Some((_, u)) => eprintln!(
+            "note: az's active account is now {u} (it was {user}); select it again with `az account set`"
+        ),
+        None => {}
+    }
+    Ok(())
 }
 
 async fn list_accounts(az: &PathBuf) -> Result<Vec<Account>> {
@@ -223,6 +287,52 @@ esac
             !log.contains("account set"),
             "must never change the active context"
         );
+    }
+
+    /// A fake `az` for `login`: logs calls, and `account show` reports
+    /// whatever `account set` last chose (starting on sub-a).
+    fn stub_login(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("az");
+        let log = dir.join("calls.log");
+        let cur = dir.join("current");
+        std::fs::write(&cur, "sub-a").unwrap();
+        let script = format!(
+            r#"#!/bin/sh
+echo "$@" >> '{log}'
+case "$1 $2" in
+  "account show") id=$(cat '{cur}'); echo '{{"id":"'$id'","user":{{"name":"admin@fabric.example"}}}}' ;;
+  "account list") echo '[{{"id":"sub-a","tenantId":"t-1","user":{{"name":"admin@fabric.example"}}}}]' ;;
+  "account set") echo "$4" > '{cur}' ;;
+  "login "*) echo other > '{cur}' ;;
+esac
+"#,
+            log = log.display(),
+            cur = cur.display()
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn login_uses_the_known_tenant_and_restores_the_active_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let az = stub_login(dir.path());
+        login(&az, Some("ADMIN@fabric.example"), None)
+            .await
+            .unwrap();
+        let log = std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
+        let calls: Vec<&str> = log.lines().collect();
+        assert!(
+            calls.contains(&"login --allow-no-subscriptions --tenant t-1"),
+            "{calls:?}"
+        );
+        assert!(
+            calls.contains(&"account set --subscription sub-a"),
+            "{calls:?}"
+        );
+        let cur = std::fs::read_to_string(dir.path().join("current")).unwrap();
+        assert_eq!(cur.trim(), "sub-a");
     }
 
     #[tokio::test]

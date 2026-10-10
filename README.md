@@ -7,8 +7,7 @@ fablic                 # start on the default profile
 fablic -p <profile>    # start on a profile (name or az account)
 fablic --readonly      # block every write
 fablic --fake          # built-in fake data, no sign-in needed
-fablic login <profile> # sign a device profile in (see below)
-fablic logout <profile>
+fablic login [profile] # az login, keeping az's active account as it was
 ```
 
 ## Sign-in and profiles
@@ -17,9 +16,14 @@ fablic uses your az CLI login. Each profile is pinned to one az account. Tokens 
 requested with `--subscription`, so the active az context is never changed and
 several identities can be used side by side. Switch with `ctrl-p` or `:ctx <name>`.
 
-Unless the config file names az profiles itself, every account in
-`az account list --all` becomes a profile. To name them, set colours, or mark one
-read-only, create `~/.config/fablic/config.toml` (or `$XDG_CONFIG_HOME/fablic/config.toml`):
+To sign in (or sign in again when your tenant's session limit runs out), run
+`fablic login <profile>`. It runs `az login` for that account's tenant, then makes
+az's previously active account active again, since `az login` always switches to
+the new login and other tools may rely on the active one.
+
+With no config file, every account in `az account list --all` becomes a profile.
+To name them, set colours, or mark one read-only, create
+`~/.config/fablic/config.toml` (or `$XDG_CONFIG_HOME/fablic/config.toml`):
 
 ```toml
 default_profile = "fabric"
@@ -30,41 +34,6 @@ account = "admin123@fabric.example.net"
 readonly = false
 color = "#89b4fa"
 ```
-
-### Signing in without az
-
-For an identity you don't want in az, run `fablic login` (no config needed):
-
-```sh
-fablic login                                  # a profile named "default"
-fablic login partner --tenant partner.com     # or name it, and pick a tenant
-fablic login --device-code                    # no browser here (e.g. over SSH)
-fablic logout partner
-```
-
-It opens Microsoft's sign-in page in your browser, the same way `az login` does
-(an authorization code with PKCE, sent back to a one-shot listener on localhost).
-`--device-code` shows a code to enter at microsoft.com/devicelogin instead; some
-tenants' Conditional Access blocks that flow. fablic keeps the sign-in (a
-refresh token and the account name) in the OS keychain under the service `fablic`,
-and records the profile in `~/.local/state/fablic/logins.json` so it shows up next
-to your az accounts. To give it a colour or make it read-only, add a profile of the
-same name to the config; the config's settings win:
-
-```toml
-[[profiles]]
-name = "partner"
-login = "entra"
-tenant = "partner.onmicrosoft.com"   # optional; any work account by default
-client_id = "…"                      # optional; see below
-readonly = true
-```
-
-By default this signs in as the Azure CLI's public client, as `az login` and
-Microsoft's Azure Identity libraries do; it is pre-consented for Fabric, Storage and Graph in most
-tenants. If your tenant blocks it, register your own app as a public client with
-the redirect URI `http://localhost` and set `client_id`. On Linux the kernel keyring is used, which doesn't
-survive a reboot.
 
 ## Keys
 
