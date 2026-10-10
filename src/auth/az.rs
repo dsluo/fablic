@@ -242,6 +242,9 @@ pub async fn login(az: &Path, account: Option<&str>, tenant: Option<&str>) -> Re
     }
     let status = Command::new(&az)
         .args(&args)
+        // No "pick a subscription" prompt after signing in: fablic chooses
+        // subscriptions per account itself.
+        .env("AZURE_CORE_LOGIN_EXPERIENCE_V2", "off")
         .status()
         .await
         .with_context(|| format!("running {} (is the Azure CLI installed?)", az.display()))?;
@@ -251,21 +254,70 @@ pub async fn login(az: &Path, account: Option<&str>, tenant: Option<&str>) -> Re
     let Some((id, user)) = before else {
         return Ok(());
     };
-    run_az(&az, &["account", "set", "--subscription", &id]).await?;
-    // Tenant-level entries share an id, so `account set` can land on another
-    // account; say so rather than leave a surprise.
-    let now = run_az(&az, &["account", "show", "--output", "json"])
-        .await
-        .ok()
-        .and_then(active);
-    match now {
-        Some((_, u)) if u.eq_ignore_ascii_case(&user) => {}
-        Some((_, u)) => eprintln!(
-            "note: az's active account is now {u} (it was {user}); select it again with `az account set`"
-        ),
-        None => {}
+    let show = || run_az(&az, &["account", "show", "--output", "json"]);
+    let is_back =
+        |now: Option<(String, String)>| now.is_some_and(|(_, u)| u.eq_ignore_ascii_case(&user));
+    let _ = run_az(&az, &["account", "set", "--subscription", &id]).await;
+    if is_back(show().await.ok().and_then(active)) {
+        return Ok(());
+    }
+    // Accounts that share a subscription (or tenant) id can't be told apart
+    // by `account set`; mark the right entry active in az's profile itself.
+    let profile = profile_path();
+    let patched = profile
+        .as_deref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| make_default(&text, &id, &user));
+    match (patched, profile) {
+        (Some(text), Some(path)) => {
+            std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?
+        }
+        _ => {
+            eprintln!(
+                "note: az no longer has {user} (az login replaced it); sign it in again to use it"
+            );
+            return Ok(());
+        }
+    }
+    if !is_back(show().await.ok().and_then(active)) {
+        eprintln!("note: couldn't make {user} az's active account again; use `az account set`");
     }
     Ok(())
+}
+
+/// az's profile: `$AZURE_CONFIG_DIR/azureProfile.json`, or `~/.azure`.
+fn profile_path() -> Option<PathBuf> {
+    let dir = std::env::var_os("AZURE_CONFIG_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| directories::BaseDirs::new().map(|b| b.home_dir().join(".azure")))?;
+    Some(dir.join("azureProfile.json"))
+}
+
+/// az's profile with only the entry for (`id`, `user`) marked as the active
+/// one, or `None` if it has no such entry. Keeps the byte order mark az
+/// writes the file with.
+fn make_default(text: &str, id: &str, user: &str) -> Option<String> {
+    let (bom, body) = match text.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", text),
+    };
+    let mut doc: serde_json::Value = serde_json::from_str(body).ok()?;
+    let subs = doc.get_mut("subscriptions")?.as_array_mut()?;
+    let is_it = |s: &serde_json::Value| {
+        s["id"].as_str() == Some(id)
+            && s["user"]["name"]
+                .as_str()
+                .is_some_and(|u| u.eq_ignore_ascii_case(user))
+    };
+    if !subs.iter().any(is_it) {
+        return None;
+    }
+    for s in subs.iter_mut() {
+        let on = is_it(s);
+        s["isDefault"] = on.into();
+    }
+    Some(format!("{bom}{}", serde_json::to_string_pretty(&doc).ok()?))
 }
 
 async fn list_accounts(az: &PathBuf) -> Result<Vec<Account>> {
@@ -384,6 +436,26 @@ esac
         );
         let cur = std::fs::read_to_string(dir.path().join("current")).unwrap();
         assert_eq!(cur.trim(), "sub-a");
+    }
+
+    #[test]
+    fn marks_the_right_account_active_when_ids_are_shared() {
+        let text = "\u{feff}{\"subscriptions\": [\
+            {\"id\": \"s1\", \"isDefault\": true, \"user\": {\"name\": \"admin@x\", \"type\": \"user\"}},\
+            {\"id\": \"s1\", \"isDefault\": false, \"user\": {\"name\": \"48cd\", \"type\": \"servicePrincipal\"}}\
+            ], \"installationId\": \"i\"}";
+        let out = make_default(text, "s1", "48CD").unwrap();
+        assert!(out.starts_with('\u{feff}'));
+        let v: serde_json::Value = serde_json::from_str(&out[3..]).unwrap();
+        let flags: Vec<bool> = v["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["isDefault"].as_bool().unwrap())
+            .collect();
+        assert_eq!(flags, [false, true]);
+        assert_eq!(v["installationId"], "i");
+        assert!(make_default(text, "s1", "gone@x").is_none());
     }
 
     #[tokio::test]

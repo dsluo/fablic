@@ -213,10 +213,12 @@ async fn run(
         for effect in app.take_effects() {
             if let Effect::Login { profile } = effect {
                 drop(events.take());
-                ratatui::restore();
+                suspend()?;
                 println!("Signing {profile} in again with az…");
                 let result = auth::login(std::path::Path::new("az"), Some(&profile), None).await;
-                *terminal = ratatui::init();
+                // Reuse the terminal: building a new one asks the terminal
+                // for the cursor position, which can time out after az.
+                resume()?;
                 terminal.clear()?;
                 events = Some(EventStream::new());
                 if let Some(src) = sources.get(&profile) {
@@ -253,6 +255,24 @@ async fn run(
             _ = tick.tick() => app.on_tick(),
         }
     }
+}
+
+/// Hand the terminal back to the shell (for `az login`).
+fn suspend() -> Result<()> {
+    crossterm::terminal::disable_raw_mode()?;
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::cursor::Show
+    )?;
+    Ok(())
+}
+
+/// Take the terminal back after `suspend`.
+fn resume() -> Result<()> {
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+    Ok(())
 }
 
 /// Split snapshot steps on spaces, keeping single-quoted steps together.
