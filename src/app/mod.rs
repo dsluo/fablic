@@ -587,7 +587,11 @@ pub(crate) mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let src: crate::source::SharedSource = std::sync::Arc::new(FakeSource);
+        thread_local! {
+            // One fake tenant per test, so writes stick between steps.
+            static SRC: crate::source::SharedSource = std::sync::Arc::new(FakeSource::default());
+        }
+        let src = SRC.with(|s| s.clone());
         let sources: std::collections::HashMap<_, _> = app
             .profiles
             .iter()
@@ -620,7 +624,7 @@ pub(crate) mod tests {
     fn starts_on_workspaces() {
         let app = fake_app();
         assert_eq!(app.kind(), Kind::Workspaces);
-        assert_eq!(app.view.len(), 3);
+        assert_eq!(app.view.len(), 5);
         assert_eq!(app.table.selected(), Some(0));
     }
 
@@ -634,7 +638,7 @@ pub(crate) mod tests {
         assert_eq!(app.selected_row().unwrap().id, "ws-2");
         app.on_key(key(KeyCode::Char('/')));
         app.on_key(key(KeyCode::Esc));
-        assert_eq!(app.view.len(), 3);
+        assert_eq!(app.view.len(), 5);
     }
 
     #[test]
@@ -647,7 +651,7 @@ pub(crate) mod tests {
             generation: old,
             result: Ok(Vec::new()),
         });
-        assert_eq!(app.rows.len(), 3);
+        assert_eq!(app.rows.len(), 5);
     }
 
     #[test]

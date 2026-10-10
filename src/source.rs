@@ -348,6 +348,12 @@ pub trait DataSource: Send + Sync {
     fn warm(&self) -> BoxFuture<'static, Result<()>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// Sign in again without az, for a source that can (the fake one).
+    /// `None` means signing in is `az login`'s job.
+    fn sign_in(&self) -> Option<BoxFuture<'static, Result<()>>> {
+        None
+    }
 }
 
 pub type SharedSource = Arc<dyn DataSource>;

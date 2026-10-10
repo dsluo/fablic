@@ -316,12 +316,12 @@ mod tests {
         type_str(&mut app, ":nb all");
         press(&mut app, KeyCode::Enter);
         assert!(app.frame.query.scope.workspace.is_none());
-        assert_eq!(app.rows[app.view[0]].cells[2], "Urban1 Bronze");
+        assert_eq!(app.rows[app.view[0]].cells[2], "Sandbox");
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.kind(), Kind::Jobs);
         assert_eq!(
             app.frame.query.scope.label(),
-            "Urban1 Bronze › ingest_shop (Notebook)"
+            "Sandbox › scratch (Notebook)"
         );
     }
 }
