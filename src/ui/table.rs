@@ -49,7 +49,12 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
 
     let columns = Kind::columns_for(q);
     let avail = area.width.saturating_sub(2) as usize;
-    let widths = column_widths(app, columns, avail);
+    let mut widths = column_widths(app, columns, avail);
+    // The last column takes whatever is left over.
+    if let Some((last, others)) = widths.split_last_mut() {
+        let used = others.iter().sum::<usize>() + 2 * others.len();
+        *last = (*last).max(avail.saturating_sub(used));
+    }
     let header = Row::new(
         columns
             .iter()
@@ -71,18 +76,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             .enumerate()
             .map(|(c, text)| match columns.get(c) {
                 Some(title) if is_path(title) => Cell::from(tail(text, widths[c])),
-                _ => Cell::from(text.as_str()),
+                _ => Cell::from(head(text, widths[c])),
             });
         Row::new(cells).style(Style::new().fg(color))
     });
-    // The last column takes whatever is left over.
-    let constraints = widths.iter().enumerate().map(|(c, &w)| {
-        if c + 1 == widths.len() {
-            Constraint::Fill(1)
-        } else {
-            Constraint::Length(w as u16)
-        }
-    });
+    let constraints = widths.iter().map(|&w| Constraint::Length(w as u16));
     let table = Table::new(rows, constraints)
         .header(header)
         .block(block)
@@ -165,6 +163,15 @@ fn column_widths(app: &App, columns: &[&str], avail: usize) -> Vec<usize> {
     fit_widths(&desired, columns, avail)
 }
 
+/// Text cut to `width` with a trailing `…`, so a cut is visible.
+fn head(s: &str, width: usize) -> String {
+    if s.chars().count() <= width || width == 0 {
+        return s.to_owned();
+    }
+    let keep: String = s.chars().take(width - 1).collect();
+    format!("{keep}…")
+}
+
 /// A path cut to `width` from the left: `…/ingest/shop`.
 fn tail(s: &str, width: usize) -> String {
     let n = s.chars().count();
@@ -201,5 +208,7 @@ mod tests {
     fn paths_keep_their_end() {
         assert_eq!(tail("/ETL_CFG_Tables_Insertion", 12), "…s_Insertion");
         assert_eq!(tail("/ingest", 12), "/ingest");
+        assert_eq!(head("New notebook", 11), "New notebo…");
+        assert_eq!(head("New notebook", 12), "New notebook");
     }
 }
