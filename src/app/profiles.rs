@@ -20,6 +20,7 @@ impl App {
             p.auth = Auth::Checking;
             self.effects.push(Effect::Check {
                 profile: p.account.clone(),
+                fresh: false,
             });
         }
         self.profile.auth = Auth::Checking;
@@ -43,6 +44,7 @@ impl App {
                 self.set_auth(account, Auth::Checking);
                 self.effects.push(Effect::Check {
                     profile: account.to_owned(),
+                    fresh: false,
                 });
                 if self.profile.account == account {
                     self.cache.retain(|(a, _), _| a != account);
@@ -60,6 +62,16 @@ impl App {
     /// principal needs its secret, so it gets the az command instead.
     fn login(&mut self) {
         let p = &self.profiles[self.picker];
+        // It signs itself in from the environment: just do that again.
+        if p.from_env {
+            let account = p.account.clone();
+            self.set_auth(&account, Auth::Checking);
+            self.effects.push(Effect::Check {
+                profile: account,
+                fresh: true,
+            });
+            return;
+        }
         if p.service_principal {
             let hint = crate::auth::service_principal_hint(&p.account, &p.tenant);
             self.detail = super::Detail {
@@ -296,5 +308,26 @@ mod tests {
             "{text}"
         );
         assert!(app.detail.lines.iter().all(|l| l.chars().count() < 80));
+    }
+
+    #[test]
+    fn env_profiles_sign_in_again_without_the_terminal() {
+        let mut app = App::new(
+            vec![ProfileInfo {
+                name: "env".into(),
+                account: "48cd".into(),
+                service_principal: true,
+                from_env: true,
+                ..Default::default()
+            }],
+            0,
+        );
+        settle(&mut app);
+        app.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        settle(&mut app);
+        app.on_key(key(KeyCode::Char('l')));
+        assert_eq!(app.mode, Mode::Profiles);
+        let e = app.take_effects();
+        assert!(matches!(&e[..], [Effect::Check { profile, fresh: true }] if profile == "48cd"));
     }
 }

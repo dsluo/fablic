@@ -24,9 +24,52 @@ const MARGIN: Duration = Duration::from_secs(5 * 60);
 pub struct AzCli {
     account: String,
     az: PathBuf,
+    /// `AZURE_CONFIG_DIR` for this profile's az calls; az's default (`~/.azure`) if none.
+    config_dir: Option<PathBuf>,
+    /// Sign in from the environment when az has no (working) login.
+    env_login: Option<EnvLogin>,
     state: Mutex<State>,
     /// Set by `forget`; the next `token` call starts from scratch.
     stale: std::sync::atomic::AtomicBool,
+}
+
+/// A service principal from the variables the Azure SDKs' EnvironmentCredential
+/// reads: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` or
+/// `AZURE_CLIENT_CERTIFICATE_PATH`.
+#[derive(Clone)]
+pub struct EnvLogin {
+    pub client_id: String,
+    pub tenant: String,
+    secret: Option<String>,
+    certificate: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for EnvLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvLogin")
+            .field("client_id", &self.client_id)
+            .field("tenant", &self.tenant)
+            .field("secret", &self.secret.as_ref().map(|_| "…"))
+            .field("certificate", &self.certificate)
+            .finish()
+    }
+}
+
+impl EnvLogin {
+    /// The service principal the environment names, if it names one fully.
+    pub fn from_env() -> Option<EnvLogin> {
+        EnvLogin::from_vars(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+    }
+
+    fn from_vars(var: impl Fn(&str) -> Option<String>) -> Option<EnvLogin> {
+        let login = EnvLogin {
+            client_id: var("AZURE_CLIENT_ID")?,
+            tenant: var("AZURE_TENANT_ID")?,
+            secret: var("AZURE_CLIENT_SECRET"),
+            certificate: var("AZURE_CLIENT_CERTIFICATE_PATH").map(PathBuf::from),
+        };
+        (login.secret.is_some() || login.certificate.is_some()).then_some(login)
+    }
 }
 
 #[derive(Default)]
@@ -96,9 +139,60 @@ impl AzCli {
         AzCli {
             account: account.into(),
             az: az.into(),
+            config_dir: None,
+            env_login: None,
             state: Mutex::new(State::default()),
             stale: Default::default(),
         }
+    }
+
+    /// A profile for the environment's service principal, with az logins of
+    /// its own in `config_dir` so signing in elsewhere can't drop it.
+    pub fn from_env_login(login: EnvLogin, config_dir: PathBuf) -> AzCli {
+        AzCli {
+            config_dir: Some(config_dir),
+            ..AzCli::new(login.client_id.clone())
+        }
+        .with_env_login(login)
+    }
+
+    fn with_env_login(mut self, login: EnvLogin) -> AzCli {
+        self.env_login = Some(login);
+        self
+    }
+
+    /// Sign the environment's service principal in to this profile's az.
+    async fn env_sign_in(&self) -> Result<()> {
+        let Some(l) = &self.env_login else {
+            return Ok(());
+        };
+        let mut args = vec![
+            "login",
+            "--service-principal",
+            "--username",
+            &l.client_id,
+            "--tenant",
+            &l.tenant,
+            "--allow-no-subscriptions",
+            "--output",
+            "none",
+        ];
+        let cert;
+        match (&l.secret, &l.certificate) {
+            (Some(secret), _) => args.extend(["--password", secret]),
+            (None, Some(path)) => {
+                cert = path.display().to_string();
+                args.extend(["--certificate", &cert]);
+            }
+            (None, None) => bail!("no AZURE_CLIENT_SECRET or AZURE_CLIENT_CERTIFICATE_PATH"),
+        }
+        if let Some(dir) = &self.config_dir {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        self.run(&args)
+            .await
+            .map(|_| ())
+            .with_context(|| format!("signing {} in from the environment", l.client_id))
     }
 
     /// Every identity az has cached, deduplicated, in az's order.
@@ -118,13 +212,21 @@ impl AzCli {
     }
 
     async fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
-        run_az(&self.az, args).await
+        run_az_in(&self.az, self.config_dir.as_deref(), args).await
     }
 
     /// The subscription id whose account is ours, refusing ids that another
     /// account shares (tenant-level entries use the tenant id as their id).
     async fn resolve_subscription(&self) -> Result<String> {
-        let list = list_accounts(&self.az).await?;
+        let mut list = self.list().await?;
+        let known = |l: &[Account]| {
+            l.iter()
+                .any(|a| a.user.name.eq_ignore_ascii_case(&self.account))
+        };
+        if !known(&list) && self.env_login.is_some() {
+            self.env_sign_in().await?;
+            list = self.list().await?;
+        }
         let mine = list
             .iter()
             .find(|a| a.user.name.eq_ignore_ascii_case(&self.account))
@@ -148,7 +250,28 @@ impl AzCli {
         Ok(mine.id.clone())
     }
 
+    async fn list(&self) -> Result<Vec<Account>> {
+        let out = self
+            .run(&["account", "list", "--all", "--output", "json"])
+            .await?;
+        serde_json::from_slice(&out).context("parsing `az account list`")
+    }
+
+    /// A token for `resource`; an environment login signs in again once if
+    /// az can't produce one (say, after the secret was rotated).
     async fn fetch(&self, state: &mut State, resource: &str) -> Result<(String, u64)> {
+        match self.fetch_once(state, resource).await {
+            Err(e) if self.env_login.is_some() => {
+                tracing::info!(account = %self.account, "signing in from the environment again: {e:#}");
+                self.env_sign_in().await?;
+                state.subscription = None;
+                self.fetch_once(state, resource).await
+            }
+            r => r,
+        }
+    }
+
+    async fn fetch_once(&self, state: &mut State, resource: &str) -> Result<(String, u64)> {
         if state.subscription.is_none() {
             state.subscription = Some(self.resolve_subscription().await?);
         }
@@ -179,6 +302,10 @@ impl TokenProvider for AzCli {
             let mut state = self.state.lock().await;
             if self.stale.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 *state = State::default();
+                // `l` on an environment profile: sign in afresh.
+                if self.env_login.is_some() {
+                    self.env_sign_in().await?;
+                }
             }
             let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
             if let Some((tok, exp)) = state.tokens.get(resource)
@@ -321,13 +448,23 @@ fn make_default(text: &str, id: &str, user: &str) -> Option<String> {
     Some(format!("{bom}{}", serde_json::to_string_pretty(&doc).ok()?))
 }
 
-async fn list_accounts(az: &PathBuf) -> Result<Vec<Account>> {
+async fn list_accounts(az: &Path) -> Result<Vec<Account>> {
     let out = run_az(az, &["account", "list", "--all", "--output", "json"]).await?;
     serde_json::from_slice(&out).context("parsing `az account list`")
 }
 
-async fn run_az(az: &PathBuf, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new(az)
+async fn run_az(az: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    run_az_in(az, None, args).await
+}
+
+/// Run az with `AZURE_CONFIG_DIR` set to `config_dir`, if given. Errors name
+/// only the first two arguments, so a secret further on never shows up.
+async fn run_az_in(az: &Path, config_dir: Option<&Path>, args: &[&str]) -> Result<Vec<u8>> {
+    let mut cmd = Command::new(az);
+    if let Some(dir) = config_dir {
+        cmd.env("AZURE_CONFIG_DIR", dir);
+    }
+    let out = cmd
         .args(args)
         .kill_on_drop(true)
         .output()
@@ -437,6 +574,90 @@ esac
         );
         let cur = std::fs::read_to_string(dir.path().join("current")).unwrap();
         assert_eq!(cur.trim(), "sub-a");
+    }
+
+    #[test]
+    fn env_logins_need_an_id_tenant_and_a_credential() {
+        let vars = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        assert!(
+            EnvLogin::from_vars(vars(&[("AZURE_CLIENT_ID", "c"), ("AZURE_TENANT_ID", "t")]))
+                .is_none()
+        );
+        let l = EnvLogin::from_vars(vars(&[
+            ("AZURE_CLIENT_ID", "c"),
+            ("AZURE_TENANT_ID", "t"),
+            ("AZURE_CLIENT_SECRET", "hunter2"),
+        ]))
+        .unwrap();
+        assert!(
+            !format!("{l:?}").contains("hunter2"),
+            "Debug hides the secret"
+        );
+    }
+
+    /// A fake az that keeps its accounts in `$AZURE_CONFIG_DIR/accounts`:
+    /// `login --service-principal` adds one there.
+    fn stub_env_az(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("az");
+        let log = dir.join("calls.log");
+        let script = format!(
+            r#"#!/bin/sh
+echo "AZURE_CONFIG_DIR=$AZURE_CONFIG_DIR $@" >> '{log}'
+acc="$AZURE_CONFIG_DIR/accounts"
+case "$1 $2" in
+  "account list") cat "$acc" 2>/dev/null || echo '[]' ;;
+  "login --service-principal") echo '[{{"id":"t","tenantId":"t","user":{{"name":"c","type":"servicePrincipal"}}}}]' > "$acc" ;;
+  "account get-access-token") echo '{{"accessToken":"sp-tok","expires_on":4102444800}}' ;;
+esac
+"#,
+            log = log.display()
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn env_profiles_sign_in_to_their_own_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("own-az");
+        let login = EnvLogin {
+            client_id: "c".into(),
+            tenant: "t".into(),
+            secret: Some("hunter2".into()),
+            certificate: None,
+        };
+        let az = AzCli {
+            az: stub_env_az(dir.path()),
+            ..AzCli::from_env_login(login, own.clone())
+        };
+        assert_eq!(az.token(super::super::FABRIC).await.unwrap(), "sp-tok");
+        let log = std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
+        assert!(
+            log.lines()
+                .all(|l| l.starts_with(&format!("AZURE_CONFIG_DIR={} ", own.display()))),
+            "{log}"
+        );
+        assert!(
+            log.contains("login --service-principal --username c --tenant t"),
+            "{log}"
+        );
+        // Signed in once; the next token comes from the cache.
+        az.token(super::super::FABRIC).await.unwrap();
+        let again = std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
+        assert_eq!(again.matches("login --service-principal").count(), 1);
+        // `l` (forget) signs in afresh.
+        az.forget();
+        az.token(super::super::FABRIC).await.unwrap();
+        let after = std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
+        assert_eq!(after.matches("login --service-principal").count(), 2);
     }
 
     #[test]

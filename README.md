@@ -21,7 +21,20 @@ To sign in (or sign in again when your tenant's session limit runs out), run
 az's previously active account active again, since `az login` always switches to
 the new login and other tools may rely on the active one. Service principals
 (`az login --service-principal`) can't sign in interactively; for those it prints
-the `az` command to run instead, since fablic never sees their secret. Profiles
+the `az` command to run instead, since fablic never sees their secret.
+
+### A service principal from the environment
+
+If `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and `AZURE_CLIENT_SECRET` (or
+`AZURE_CLIENT_CERTIFICATE_PATH`) are set, the variables the Azure SDKs read, fablic adds
+a profile `env` for that service principal. It signs itself in with
+`az login --service-principal` into its own az config directory
+(`~/.local/state/fablic/az/env`), so logins in your usual `~/.azure` can never drop it,
+and signs in again on its own if a token request fails (e.g. after the secret was
+rotated) or when you press `l` on it. A profile in the config with that client id as its
+`account` is used instead of `env`, keeping its name and settings. Note that az takes the
+secret as a command-line argument, so it is briefly visible to other processes on this
+machine while it signs in. Profiles
 made from them are named `sp-` plus the first block of the client id. The profile picker
 (`ctrl-p`) shows which profiles are signed in, and `l` there does the same without
 leaving fablic.

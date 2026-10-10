@@ -410,6 +410,9 @@ fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
             if p.service_principal {
                 spans.push(Span::styled(" [service principal]", base.fg(t.dim)));
             }
+            if p.from_env {
+                spans.push(Span::styled(" [from env]", base.fg(t.dim)));
+            }
             if p.readonly {
                 spans.push(Span::styled(" [read-only]", base.fg(t.bad)));
             }
@@ -429,6 +432,9 @@ fn tags(p: &crate::app::ProfileInfo) -> String {
     let mut out = String::new();
     if p.service_principal {
         out.push_str(" [service principal]");
+    }
+    if p.from_env {
+        out.push_str(" [from env]");
     }
     if p.readonly {
         out.push_str(" [read-only]");

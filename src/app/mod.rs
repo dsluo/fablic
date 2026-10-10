@@ -73,9 +73,11 @@ pub enum Effect {
         profile: String,
         action: Action,
     },
-    /// See whether a profile can get a token.
+    /// See whether a profile can get a token; `fresh` drops its cached
+    /// credentials first (an environment profile then signs in again).
     Check {
         profile: String,
+        fresh: bool,
     },
     /// Sign a profile in again with az. Needs the terminal, so the event
     /// loop runs it itself.
@@ -171,6 +173,8 @@ pub struct ProfileInfo {
     pub service_principal: bool,
     /// Its Entra tenant, when az knows it.
     pub tenant: String,
+    /// Signs itself in from `AZURE_CLIENT_ID` & co.
+    pub from_env: bool,
 }
 
 /// Whether a profile can get tokens, as last checked.

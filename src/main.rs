@@ -15,7 +15,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
@@ -115,12 +115,18 @@ async fn main() -> Result<()> {
 async fn live_profiles(
     args: &Args,
 ) -> Result<(Vec<ProfileInfo>, usize, HashMap<String, SharedSource>)> {
-    let (config, az) = profiles_config().await?;
+    let (config, az, env) = profiles_config().await?;
     let active = config.initial(args.profile.as_deref())?;
     let mut sources = HashMap::new();
     let mut profiles = Vec::new();
     for p in config.profiles {
-        let tokens = Arc::new(AzCli::new(&p.account));
+        let from_env = env
+            .as_ref()
+            .filter(|e| e.client_id.eq_ignore_ascii_case(&p.account));
+        let tokens = match (from_env, env_az_dir()) {
+            (Some(e), Some(dir)) => Arc::new(AzCli::from_env_login(e.clone(), dir)),
+            _ => Arc::new(AzCli::new(&p.account)),
+        };
         let src: SharedSource = Arc::new(FabricSource::new(tokens));
         sources.insert(p.account.clone(), src);
         let known = az.iter().find(|a| a.name.eq_ignore_ascii_case(&p.account));
@@ -128,8 +134,12 @@ async fn live_profiles(
             color: p.color.as_deref().and_then(|c| Color::from_str(c).ok()),
             auth: Default::default(),
             readonly: p.readonly || args.readonly,
-            service_principal: known.is_some_and(|a| a.service_principal),
-            tenant: known.map(|a| a.tenant.clone()).unwrap_or_default(),
+            service_principal: from_env.is_some() || known.is_some_and(|a| a.service_principal),
+            tenant: from_env
+                .map(|e| e.tenant.clone())
+                .or_else(|| known.map(|a| a.tenant.clone()))
+                .unwrap_or_default(),
+            from_env: from_env.is_some(),
             name: p.name,
             account: p.account,
         });
@@ -137,16 +147,35 @@ async fn live_profiles(
     Ok((profiles, active, sources))
 }
 
-/// The profiles fablic offers (the config's, or one per az identity) and
+/// Where the environment's service principal keeps its own az logins.
+fn env_az_dir() -> Option<std::path::PathBuf> {
+    config::state_dir().map(|d| d.join("az").join("env"))
+}
+
+/// The profiles fablic offers: the config's (or one per az identity), plus
+/// one for a service principal named by `AZURE_CLIENT_ID` & co. Also returns
 /// what az knows about each identity (empty if az can't be asked).
-async fn profiles_config() -> Result<(Config, Vec<auth::AzAccount>)> {
-    let config = Config::load(Config::path().as_deref())?;
+async fn profiles_config() -> Result<(Config, Vec<auth::AzAccount>, Option<auth::EnvLogin>)> {
+    let mut config = Config::load(Config::path().as_deref())?;
+    let env = auth::EnvLogin::from_env();
     let az = AzCli::accounts().await;
-    if config.profiles.is_empty() {
-        let az = az.context("listing az accounts for default profiles")?;
-        return Ok((config.with_az_accounts(&az), az));
+    let az = if config.profiles.is_empty() {
+        match az {
+            Ok(az) => {
+                config = config.with_az_accounts(&az);
+                az
+            }
+            // The environment's service principal works without az logins.
+            Err(_) if env.is_some() => Vec::new(),
+            Err(e) => return Err(e.context("listing az accounts for default profiles")),
+        }
+    } else {
+        az.unwrap_or_default()
+    };
+    if let Some(e) = &env {
+        config = config.with_env_profile(&e.client_id);
     }
-    Ok((config, az.unwrap_or_default()))
+    Ok((config, az, env))
 }
 
 /// `fablic login [profile]`: `az login` for that profile's account.
@@ -154,8 +183,20 @@ async fn login(profile: Option<&str>, tenant: Option<&str>) -> Result<()> {
     let account = match profile {
         None => None,
         Some(wanted) => {
-            let (config, _) = profiles_config().await?;
+            let (config, _, env) = profiles_config().await?;
             match config.initial(Some(wanted)) {
+                Ok(i)
+                    if env.as_ref().is_some_and(|e| {
+                        e.client_id
+                            .eq_ignore_ascii_case(&config.profiles[i].account)
+                    }) =>
+                {
+                    println!(
+                        "{} signs in by itself from AZURE_CLIENT_ID and friends; nothing to do",
+                        config.profiles[i].name
+                    );
+                    return Ok(());
+                }
                 Ok(i) => Some(config.profiles[i].account.clone()),
                 // Not a profile yet: an account az hasn't seen.
                 Err(_) if wanted.contains('@') => Some(wanted.to_owned()),

@@ -129,9 +129,14 @@ pub async fn perform(effect: Effect, sources: &Sources, ctx: &Ctx) -> Option<Msg
             journal::append(ctx.journal_dir.as_deref(), &profile, &action, &result);
             Some(Msg::Acted { action, result })
         }
-        Effect::Check { profile } => {
+        Effect::Check { profile, fresh } => {
             let result = match source(&profile) {
-                Ok(s) => s.warm().await.map_err(err),
+                Ok(s) => {
+                    if fresh {
+                        s.forget();
+                    }
+                    s.warm().await.map_err(err)
+                }
                 Err(e) => Err(e),
             };
             Some(Msg::Auth { profile, result })

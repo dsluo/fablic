@@ -106,6 +106,34 @@ impl Config {
         self
     }
 
+    /// Make sure there's a profile for the environment's service principal:
+    /// one already using that client id is kept as is (name, read-only,
+    /// colour); otherwise it is added as `env`, or its `[names]` entry.
+    pub fn with_env_profile(mut self, client_id: &str) -> Config {
+        if self
+            .profiles
+            .iter()
+            .any(|p| p.account.eq_ignore_ascii_case(client_id))
+        {
+            return self;
+        }
+        let mut name = self
+            .names
+            .get(client_id)
+            .cloned()
+            .unwrap_or_else(|| "env".into());
+        if self.profiles.iter().any(|p| p.name == name) {
+            name = format!("{name}-sp");
+        }
+        self.profiles.push(Profile {
+            name,
+            account: client_id.to_owned(),
+            readonly: false,
+            color: None,
+        });
+        self
+    }
+
     /// The profile to start on: the flag, then `default_profile`, then the first.
     pub fn initial(&self, wanted: Option<&str>) -> Result<usize> {
         let name = wanted.or(self.default_profile.as_deref());
@@ -286,6 +314,17 @@ mod tests {
         assert!(text.starts_with("# mine\n"), "{text}");
         assert!(text.contains("name = \"new\""), "{text}");
         assert!(!text.contains("[names]"), "{text}");
+    }
+
+    #[test]
+    fn env_service_principal_joins_or_reuses_a_profile() {
+        let base = Config::default().with_az_accounts(&[az("me@b.org")]);
+        let c = base.clone().with_env_profile("48cd-99");
+        let names: Vec<&str> = c.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["me", "env"]);
+        // Already a profile (say, az has it too): kept, not doubled.
+        let c = base.with_env_profile("ME@b.org");
+        assert_eq!(c.profiles.len(), 1);
     }
 
     #[test]
