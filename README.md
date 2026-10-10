@@ -1,6 +1,6 @@
 # fablic
 
-A k9s-style terminal UI for Microsoft Fabric.
+A TUI for Microsoft Fabric inspired by [sofka](https://github.com/nklmilojevic/sofka).
 
 ```sh
 fablic                 # start on the default profile
@@ -9,6 +9,12 @@ fablic --readonly      # block every write
 fablic --fake          # built-in fake data, no sign-in needed
 fablic login [profile] # az login, keeping az's active account as it was
 ```
+
+## Why?
+
+As someone used to command line tools like `lazygit`, `sofka`, and `vim`, the web UI
+for Microsoft Fabric is painfully, ***painfully*** slow. This project hopes to create
+a much of the web UI functionality with the snappiness of a TUI experience.
 
 ## Sign-in and profiles
 
@@ -95,3 +101,9 @@ mise run lint     # clippy + rustfmt
 
 `fablic --snapshot 'STEPS'` replays keys headlessly and prints one frame, e.g.
 `fablic --fake --snapshot 'j enter F'`. Logs go to `~/.local/state/fablic/fablic.log` (`FABLIC_LOG=debug` for more).
+
+## AI Usage Disclosure
+
+AI is heavily used in the development of this project. There's no way I'd find the time to do this outside
+of the actually productive things I have to do for day job, my other hobbies and projects, and life that does
+not involve touching computers if not for the very fast autocomplete machine.
