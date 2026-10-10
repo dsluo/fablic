@@ -3,6 +3,9 @@ rust = { version = "1.99", components = "clippy,rustfmt" }
 cargo-insta = "latest"
 "github:nextest-rs/nextest" = { version = "latest", version_prefix = "cargo-nextest-", bin = "cargo-nextest" }
 
+[env]
+'_'.file = { path = ".env" }
+
 [tasks.dev]
 description = "Run fablic"
 run = "cargo run --"
