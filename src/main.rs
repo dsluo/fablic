@@ -65,11 +65,13 @@ enum Cmd {
     /// microsoft.com/devicelogin and keeps the sign-in in the OS keychain.
     Login {
         /// Profile name (or account).
+        #[arg(default_value = config::DEFAULT_PROFILE)]
         profile: String,
     },
     /// Forget a device profile's stored sign-in.
     Logout {
         /// Profile name (or account).
+        #[arg(default_value = config::DEFAULT_PROFILE)]
         profile: String,
     },
 }
@@ -184,11 +186,15 @@ fn device_profile(wanted: &str) -> Result<Profile> {
         anyhow::bail!(
             "no profile signs in with fablic's own login. Add one to {}:\n\n\
              [[profiles]]\n\
-             name = \"{wanted}\"\n\
-             login = \"device\"\n\
+             {}login = \"device\"\n\
              tenant = \"contoso.onmicrosoft.com\"   # optional",
             path.map(|p| p.display().to_string())
-                .unwrap_or_else(|| "config.toml".into())
+                .unwrap_or_else(|| "config.toml".into()),
+            if wanted == config::DEFAULT_PROFILE {
+                String::new()
+            } else {
+                format!("name = \"{wanted}\"\n")
+            }
         );
     }
     let i = config.initial(Some(wanted))?;

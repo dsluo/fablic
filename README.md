@@ -34,7 +34,8 @@ color = "#89b4fa"
 ### Signing in without az
 
 For an identity you don't want in az, give the profile `login = "device"` and run
-`fablic login <profile>`. It shows a code to enter at microsoft.com/devicelogin,
+`fablic login <profile>` (a profile with no `name` is `default`, which is also
+what `fablic login` and `fablic logout` use without an argument). It shows a code to enter at microsoft.com/devicelogin,
 then keeps the sign-in (a refresh token and the account name) in the OS keychain
 under the service `fablic`. `fablic logout <profile>` removes it.
 

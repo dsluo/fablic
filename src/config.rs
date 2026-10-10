@@ -33,6 +33,8 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
+    /// `default` when left out.
+    #[serde(default = "default_name")]
     pub name: String,
     /// How the profile gets tokens.
     #[serde(default)]
@@ -47,6 +49,13 @@ pub struct Profile {
     pub tenant: Option<String>,
     /// Device sign-in only: a public client app registration to sign in with.
     pub client_id: Option<String>,
+}
+
+/// The name of a profile that doesn't give one.
+pub const DEFAULT_PROFILE: &str = "default";
+
+fn default_name() -> String {
+    DEFAULT_PROFILE.into()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -82,10 +91,23 @@ impl Config {
             return Ok(Config::default());
         };
         match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text).with_context(|| format!("in {}", path.display())),
+            Ok(text) => toml::from_str::<Config>(&text)
+                .map_err(anyhow::Error::from)
+                .and_then(Config::check)
+                .with_context(|| format!("in {}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
+    }
+
+    /// Profile names must be unique (two unnamed profiles are both `default`).
+    fn check(self) -> Result<Config> {
+        for (i, p) in self.profiles.iter().enumerate() {
+            if self.profiles[..i].iter().any(|q| q.name == p.name) {
+                anyhow::bail!("two profiles are named {}; give one a name", p.name);
+            }
+        }
+        Ok(self)
     }
 
     /// Whether the file says which az accounts to use. If not, every cached
@@ -219,6 +241,26 @@ mod tests {
         let merged = only_device.with_az_accounts(vec!["me@b.org".into()]);
         let names: Vec<&str> = merged.profiles.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["partner", "me"]);
+    }
+
+    #[test]
+    fn unnamed_profiles_are_default_and_names_are_unique() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[[profiles]]\nlogin = \"device\"\n").unwrap();
+        let c = Config::load(Some(&path)).unwrap();
+        assert_eq!(c.profiles[0].name, "default");
+
+        std::fs::write(
+            &path,
+            "[[profiles]]\nlogin = \"device\"\n[[profiles]]\naccount = \"a@b\"\n",
+        )
+        .unwrap();
+        let e = format!("{:#}", Config::load(Some(&path)).unwrap_err());
+        assert!(
+            e.ends_with("two profiles are named default; give one a name"),
+            "{e}"
+        );
     }
 
     #[test]
