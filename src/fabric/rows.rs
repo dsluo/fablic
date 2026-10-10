@@ -380,7 +380,7 @@ pub fn jobs(list: &[Value], item: Option<&Value>, now: DateTime<Utc>) -> Vec<Row
                 s(j, "invokeType").into(),
                 local_time(start),
                 took,
-                s(j, "id").into(),
+                run_reason(j),
             ];
             let raw = match item {
                 Some(it) => {
@@ -401,6 +401,21 @@ pub fn jobs(list: &[Value], item: Option<&Value>, now: DateTime<Utc>) -> Vec<Row
     let mut rows: Vec<Row> = runs.into_iter().map(|(_, r)| r).collect();
     sort_runs(&mut rows);
     rows
+}
+
+/// Why a run failed or was cancelled, on one line: the failure message (or
+/// its error code), else the reason `mark_cancelled` found.
+fn run_reason(run: &Value) -> String {
+    let failure = run.get("failureReason").unwrap_or(&Value::Null);
+    let text = [
+        at(failure, "/message"),
+        at(failure, "/errorCode"),
+        s(run, "cancellationReason"),
+    ]
+    .into_iter()
+    .find(|t| !t.trim().is_empty())
+    .unwrap_or("");
+    text.lines().next().unwrap_or("").trim().to_owned()
 }
 
 /// Fabric reports a notebook or Spark job run that a user cancelled as

@@ -76,7 +76,7 @@ impl Kind {
                 "INVOKED BY",
                 "START",
                 "DURATION",
-                "ID",
+                "REASON",
             ],
             Kind::Schedules => &["TYPE", "ENABLED", "WHEN", "TIMEZONE", "START", "END", "ID"],
             Kind::OneLake => &["NAME", "KIND", "SIZE", "MODIFIED"],
@@ -104,7 +104,7 @@ impl Kind {
                 "INVOKED BY",
                 "START",
                 "DURATION",
-                "ID",
+                "REASON",
             ],
             k => k.columns(),
         }

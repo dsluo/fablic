@@ -100,18 +100,25 @@ impl Client {
     /// GET every page of a list endpoint and return the elements of `key`
     /// (`value` for almost everything).
     pub async fn list(&self, path: &str, key: &str) -> Result<Vec<Value>> {
+        self.list_pages(path, key, usize::MAX).await
+    }
+
+    /// Like `list`, but stop after `pages` pages (for endpoints that list
+    /// newest first and keep a long history).
+    pub async fn list_pages(&self, path: &str, key: &str, pages: usize) -> Result<Vec<Value>> {
         let mut out = Vec::new();
         let mut url = self.url(path);
-        loop {
+        for _ in 0..pages {
             let page = self.get(&url).await?;
             if let Some(Value::Array(items)) = page.get(key) {
                 out.extend(items.iter().cloned());
             }
             match page.get("continuationUri").and_then(Value::as_str) {
                 Some(next) if !next.is_empty() => url = next.to_owned(),
-                _ => return Ok(out),
+                _ => break,
             }
         }
+        Ok(out)
     }
 
     /// A plain request (PATCH, DELETE, a POST that answers 200/201) with an

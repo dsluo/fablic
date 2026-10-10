@@ -31,6 +31,8 @@ const WS_TTL: Duration = Duration::from_secs(60);
 const FAN_OUT: usize = 6;
 /// Parallel requests when listing runs of every runnable item in a workspace.
 const JOB_FAN_OUT: usize = 4;
+/// Pages of Spark sessions read to spot cancelled runs; newest come first.
+const SESSION_PAGES: usize = 3;
 /// Capacity names change rarely, and listing capacities can take seconds.
 const CAP_TTL: Duration = Duration::from_secs(600);
 /// How long the workspace list waits for capacity names before showing ids.
@@ -205,11 +207,26 @@ impl Inner {
         })
     }
 
-    /// Runs of one item. Notebook and Spark job runs are checked against
-    /// their Spark sessions, which are the only record of a user cancelling
-    /// them; if that lookup fails the runs are shown as Fabric reports them.
+    async fn instances(&self, ws: &str, item: &str) -> Result<Vec<Value>> {
+        let path = format!("workspaces/{ws}/items/{item}/jobs/instances");
+        self.client.list(&path, "value").await
+    }
+
+    /// Recent Spark (Livy) sessions from `path`, newest first. They are the
+    /// only record of a user cancelling a notebook or Spark job run, so a
+    /// failure here is logged and the runs show as Fabric reports them.
+    async fn sessions(&self, path: &str) -> Vec<Value> {
+        match self.client.list_pages(path, "value", SESSION_PAGES).await {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!(path, "listing Spark sessions: {e:#}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Runs of one item, with user-cancelled Spark runs marked as such.
     async fn runs(&self, ws: &str, item: &str, item_type: &str) -> Result<Vec<Value>> {
-        let instances = format!("workspaces/{ws}/items/{item}/jobs/instances");
         let sessions = match item_type {
             "Notebook" => Some(format!("workspaces/{ws}/notebooks/{item}/livySessions")),
             "SparkJobDefinition" => Some(format!(
@@ -217,32 +234,27 @@ impl Inner {
             )),
             _ => None,
         };
-        let recent_sessions = async {
-            // The first page holds the newest sessions, which is enough.
+        let recent = async {
             match &sessions {
-                Some(path) => self.client.get(path).await.map(Some),
-                None => Ok(None),
+                Some(path) => self.sessions(path).await,
+                None => Vec::new(),
             }
         };
-        let (runs, sessions) =
-            futures::join!(self.client.list(&instances, "value"), recent_sessions);
+        let (runs, sessions) = futures::join!(self.instances(ws, item), recent);
         let mut runs = runs?;
-        match sessions {
-            Ok(Some(page)) => {
-                let list = page.get("value").and_then(Value::as_array);
-                rows::mark_cancelled(&mut runs, list.map_or(&[], Vec::as_slice));
-            }
-            Ok(None) => {}
-            Err(e) => tracing::warn!(item, "listing Spark sessions: {e:#}"),
-        }
+        rows::mark_cancelled(&mut runs, &sessions);
         Ok(runs)
     }
 
     /// Runs of every runnable item in a workspace. There is no workspace-wide
-    /// endpoint, so this asks each item. Items that fail (e.g. no permission)
-    /// are skipped unless every one of them fails.
+    /// runs endpoint, so this asks each item; Spark sessions do have one, so
+    /// cancellations take a single extra request. Items that fail (e.g. no
+    /// permission) are skipped unless every one of them fails.
     async fn workspace_runs(&self, ws: &str, force: bool) -> Result<Vec<Row>> {
-        let data = self.workspace(ws, force).await?;
+        let sessions_path = format!("workspaces/{ws}/spark/livySessions");
+        let (data, sessions) =
+            futures::join!(self.workspace(ws, force), self.sessions(&sessions_path));
+        let data = data?;
         let runnable: Vec<Value> = data
             .items
             .iter()
@@ -252,8 +264,7 @@ impl Inner {
         let results: Vec<(Value, Result<Vec<Value>>)> = futures::stream::iter(runnable)
             .map(|item| async move {
                 let id = item["id"].as_str().unwrap_or_default().to_owned();
-                let kind = item["type"].as_str().unwrap_or_default().to_owned();
-                let res = self.runs(ws, &id, &kind).await;
+                let res = self.instances(ws, &id).await;
                 (item, res)
             })
             .buffer_unordered(JOB_FAN_OUT)
@@ -264,7 +275,10 @@ impl Inner {
         let total = results.len();
         for (item, res) in results {
             match res {
-                Ok(list) => rows.extend(rows::jobs(&list, Some(&item), now)),
+                Ok(mut list) => {
+                    rows::mark_cancelled(&mut list, &sessions);
+                    rows.extend(rows::jobs(&list, Some(&item), now));
+                }
                 Err(e) => {
                     tracing::warn!(item = %item["displayName"], "listing runs: {e:#}");
                     errors.push(e);
@@ -677,6 +691,64 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].cells[0], "load");
         assert_eq!(rows[0].cells[5], "5m00s");
+    }
+
+    #[tokio::test]
+    async fn workspace_jobs_read_cancels_from_a_few_pages_of_workspace_sessions() {
+        let server = MockServer::start().await;
+        mount_workspace(
+            &server,
+            json!([]),
+            json!([
+                {"id": "nb1", "displayName": "a", "type": "Notebook"},
+                {"id": "nb2", "displayName": "b", "type": "Notebook"}
+            ]),
+            1,
+        )
+        .await;
+        for nb in ["nb1", "nb2"] {
+            Mock::given(path(format!("/workspaces/w1/items/{nb}/jobs/instances")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                    {"id": format!("{nb}-run"), "status": "Completed",
+                     "startTimeUtc": "2026-10-09T01:00:00", "endTimeUtc": "2026-10-09T01:00:05"}
+                ]})))
+                .mount(&server)
+                .await;
+            // Per-item sessions must not be asked for in the workspace view.
+            Mock::given(path(format!("/workspaces/w1/notebooks/{nb}/livySessions")))
+                .respond_with(ResponseTemplate::new(500))
+                .expect(0)
+                .mount(&server)
+                .await;
+        }
+        // Every page points at another; only SESSION_PAGES are read.
+        let next = format!("{}/workspaces/w1/spark/livySessions", server.uri());
+        Mock::given(path("/workspaces/w1/spark/livySessions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "value": [{"jobInstanceId": "nb2-run",
+                           "cancellationReason": "User cancelled the Spark session"}],
+                "continuationUri": next,
+            })))
+            .expect(SESSION_PAGES as u64)
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let rows = src
+            .fetch(Query::new(Kind::Jobs, ws_scope()), false)
+            .await
+            .unwrap();
+        let by_item: Vec<(&str, &str, &str)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.cells[0].as_str(),
+                    r.cells[1].as_str(),
+                    r.cells[6].as_str(),
+                )
+            })
+            .collect();
+        assert!(by_item.contains(&("a", "Completed", "")));
+        assert!(by_item.contains(&("b", "Cancelled", "User cancelled the Spark session")));
     }
 
     #[tokio::test]
