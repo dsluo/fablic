@@ -3,11 +3,11 @@ source: src/ui/mod.rs
 expression: render(&mut app)
 ---
 "╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│Profile    fake                         <enter> open      <o> open                        ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
-"│Account    me@example.com               <y> definition    <:> command                     ├┤ ├─┤├┴┐│  ││    │"
-"│Workspace  Urban1 Bronze                <r> run           </> filter                      └  ┴ ┴└─┘┴─┘┴└─┘  │"
-"│Resource   items                        <s> schedules     <?> help                                          │"
-"│Count      4                            <F> flatten       <d> describe                                      │"
+"│Profile    fake                         <enter> open      <m/p> move                      ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
+"│Account    me@example.com               <y> definition    <ctrl-d> delete                 ├┤ ├─┤├┴┐│  ││    │"
+"│Workspace  Urban1 Bronze                <r> run           <:> command                     └  ┴ ┴└─┘┴─┘┴└─┘  │"
+"│Resource   items                        <F> flatten       </> filter                                        │"
+"│Count      4                            <e> rename        <?> help                                          │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭───────────────────────────────────────── items(Urban1 Bronze)[4] ──────────────────────────────────────────╮"
 "│NAME              TYPE           DESCRIPTION  ID                                                            │"

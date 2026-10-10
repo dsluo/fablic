@@ -94,8 +94,28 @@ pub struct Part {
     pub text: String,
 }
 
-/// A write. Every one goes through a confirm prompt, the read-only guard and
-/// the journal before it reaches a source.
+/// Something that can be moved between workspace folders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Movable {
+    Item(ItemRef),
+    /// A folder; `name` is its full path.
+    Folder(Ref),
+}
+
+impl Movable {
+    pub fn describe(&self) -> String {
+        match self {
+            Movable::Item(i) => format!("{} {}", i.item_type, i.name),
+            Movable::Folder(f) => format!("folder {}", f.name),
+        }
+    }
+}
+
+/// The workspace roles, in order of power.
+pub const ROLES: [&str; 4] = ["Admin", "Member", "Contributor", "Viewer"];
+
+/// A write. Every one goes through a confirm step, the read-only guard and
+/// the journal before it reaches a source. `workspace` is always an id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     RunJob {
@@ -108,6 +128,72 @@ pub enum Action {
         item: ItemRef,
         job: String,
     },
+    RenameItem {
+        workspace: String,
+        item: ItemRef,
+        name: String,
+    },
+    DescribeItem {
+        workspace: String,
+        item: ItemRef,
+        description: String,
+    },
+    DeleteItem {
+        workspace: String,
+        item: ItemRef,
+    },
+    /// `parent` is `None` for the workspace root; its `name` is a full path.
+    NewFolder {
+        workspace: String,
+        parent: Option<Ref>,
+        name: String,
+    },
+    RenameFolder {
+        workspace: String,
+        folder: Ref,
+        name: String,
+    },
+    DeleteFolder {
+        workspace: String,
+        folder: Ref,
+    },
+    /// `to` is `None` for the workspace root.
+    Move {
+        workspace: String,
+        what: Movable,
+        to: Option<Ref>,
+    },
+    /// `principal` as typed: an email/UPN, an object id, or an exact group
+    /// or service principal name. The source resolves it.
+    AddRole {
+        workspace: String,
+        principal: String,
+        role: String,
+    },
+    /// `assignment` is the role assignment, named after its principal.
+    SetRole {
+        workspace: String,
+        assignment: Ref,
+        role: String,
+    },
+    RemoveRole {
+        workspace: String,
+        assignment: Ref,
+    },
+    /// `path` is the folder holding the shortcut, e.g. `Tables`.
+    DeleteShortcut {
+        workspace: String,
+        item: ItemRef,
+        path: String,
+        name: String,
+    },
+}
+
+fn place(folder: &Option<Ref>) -> String {
+    match folder {
+        Some(f) => f.name.clone(),
+        None => "the workspace root".into(),
+    }
 }
 
 impl Action {
@@ -118,7 +204,83 @@ impl Action {
                 format!("run {} {} ({job_type})", item.item_type, item.name)
             }
             Action::CancelJob { item, job, .. } => format!("cancel run {job} of {}", item.name),
+            Action::RenameItem { item, name, .. } => {
+                format!("rename {} {} to \"{name}\"", item.item_type, item.name)
+            }
+            Action::DescribeItem { item, .. } => {
+                format!("set the description of {} {}", item.item_type, item.name)
+            }
+            Action::DeleteItem { item, .. } => format!("delete {} {}", item.item_type, item.name),
+            Action::NewFolder { parent, name, .. } => {
+                format!("create folder \"{name}\" in {}", place(parent))
+            }
+            Action::RenameFolder { folder, name, .. } => {
+                format!("rename folder {} to \"{name}\"", folder.name)
+            }
+            Action::DeleteFolder { folder, .. } => format!("delete folder {}", folder.name),
+            Action::Move { what, to, .. } => format!("move {} to {}", what.describe(), place(to)),
+            Action::AddRole {
+                principal, role, ..
+            } => format!("give {principal} the {role} role"),
+            Action::SetRole {
+                assignment, role, ..
+            } => format!("change {}'s role to {role}", assignment.name),
+            Action::RemoveRole { assignment, .. } => {
+                format!("remove {} from the workspace", assignment.name)
+            }
+            Action::DeleteShortcut { path, name, .. } => format!("delete shortcut {path}/{name}"),
         }
+    }
+
+    pub fn workspace(&self) -> &str {
+        match self {
+            Action::RunJob { workspace, .. }
+            | Action::CancelJob { workspace, .. }
+            | Action::RenameItem { workspace, .. }
+            | Action::DescribeItem { workspace, .. }
+            | Action::DeleteItem { workspace, .. }
+            | Action::NewFolder { workspace, .. }
+            | Action::RenameFolder { workspace, .. }
+            | Action::DeleteFolder { workspace, .. }
+            | Action::Move { workspace, .. }
+            | Action::AddRole { workspace, .. }
+            | Action::SetRole { workspace, .. }
+            | Action::RemoveRole { workspace, .. }
+            | Action::DeleteShortcut { workspace, .. } => workspace,
+        }
+    }
+
+    /// Ids of what the action touches, for the journal.
+    pub fn target(&self) -> String {
+        let ws = format!("workspace={}", self.workspace());
+        let rest = match self {
+            Action::RunJob { item, .. } => format!("item={}", item.id),
+            Action::CancelJob { item, job, .. } => format!("item={} job={job}", item.id),
+            Action::RenameItem { item, .. }
+            | Action::DescribeItem { item, .. }
+            | Action::DeleteItem { item, .. } => format!("item={}", item.id),
+            Action::NewFolder { parent, .. } => {
+                format!("parent={}", parent.as_ref().map_or("root", |p| &p.id))
+            }
+            Action::RenameFolder { folder, .. } | Action::DeleteFolder { folder, .. } => {
+                format!("folder={}", folder.id)
+            }
+            Action::Move { what, to, .. } => {
+                let what = match what {
+                    Movable::Item(i) => format!("item={}", i.id),
+                    Movable::Folder(f) => format!("folder={}", f.id),
+                };
+                format!("{what} to={}", to.as_ref().map_or("root", |t| &t.id))
+            }
+            Action::AddRole { principal, .. } => format!("principal={principal}"),
+            Action::SetRole { assignment, .. } | Action::RemoveRole { assignment, .. } => {
+                format!("assignment={}", assignment.id)
+            }
+            Action::DeleteShortcut {
+                item, path, name, ..
+            } => format!("item={} shortcut={path}/{name}", item.id),
+        };
+        format!("{ws} {rest}")
     }
 }
 

@@ -167,7 +167,7 @@ impl App {
     }
 }
 
-fn item_ref(row: &Row) -> ItemRef {
+pub(super) fn item_ref(row: &Row) -> ItemRef {
     ItemRef {
         id: row.id.clone(),
         name: row.name.clone(),
@@ -176,7 +176,7 @@ fn item_ref(row: &Row) -> ItemRef {
 }
 
 /// A folder row as scope; the name is its full path so the label shows it.
-fn folder_ref(row: &Row) -> Ref {
+pub(super) fn folder_ref(row: &Row) -> Ref {
     Ref {
         id: row.id.clone(),
         name: row.field("path").unwrap_or(&row.name).to_owned(),
@@ -185,7 +185,7 @@ fn folder_ref(row: &Row) -> Ref {
 
 /// The workspace an item row belongs to: the scope's, or the one recorded on
 /// the row when it came from a list across all workspaces.
-fn workspace_of(scope: &Scope, row: &Row) -> Ref {
+pub(super) fn workspace_of(scope: &Scope, row: &Row) -> Ref {
     if let Some(ws) = &scope.workspace {
         return ws.clone();
     }

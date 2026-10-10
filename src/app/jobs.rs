@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, Effect, Level, Mode};
+use super::{App, Level, Mode};
 use crate::resources::{Health, Kind, Row, job_type_for};
 use crate::source::{Action, ItemRef, Query, Scope};
 
@@ -49,22 +49,6 @@ impl App {
             },
             _ => None,
         }
-    }
-
-    /// Ask before a write; refuse outright on a read-only profile.
-    fn confirm(&mut self, action: Action) {
-        if self.profile.readonly {
-            return self.flash(
-                Level::Error,
-                format!(
-                    "{} is read-only: won't {}",
-                    self.profile.name,
-                    action.describe()
-                ),
-            );
-        }
-        self.pending = Some(action);
-        self.mode = Mode::Confirm;
     }
 
     pub(super) fn run_job(&mut self) {
@@ -135,21 +119,22 @@ impl App {
             };
             self.push_query(Query::new(Kind::Jobs, scope));
         }
-        self.flash(Level::Info, format!("{}…", action.describe()));
-        self.effects.push(Effect::Act {
-            profile: self.profile.name.clone(),
-            action,
-        });
+        self.act(action);
     }
 
     pub(super) fn on_acted(&mut self, action: Action, result: Result<String, String>) {
         match result {
             Ok(msg) => {
                 self.flash(Level::Info, msg);
+                if matches!(action, Action::Move { .. }) {
+                    self.moving = None;
+                }
+                // Cached rows of other views may show what just changed.
+                self.cache.clear();
                 if self.kind() == Kind::Jobs {
                     self.live_until = Some(Instant::now() + WATCH_AFTER_ACTION);
-                    self.refresh(true);
                 }
+                self.refresh(true);
             }
             Err(e) => self.flash(Level::Error, format!("{} failed: {e}", action.describe())),
         }

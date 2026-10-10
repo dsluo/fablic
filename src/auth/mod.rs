@@ -10,6 +10,8 @@ pub use az::AzCli;
 pub const FABRIC: &str = "https://api.fabric.microsoft.com";
 /// OneLake (DFS and table APIs) takes storage-audience tokens.
 pub const STORAGE: &str = "https://storage.azure.com";
+/// Microsoft Graph, for turning an email or group name into an object id.
+pub const GRAPH: &str = "https://graph.microsoft.com";
 
 pub trait TokenProvider: Send + Sync {
     /// A bearer token for `resource` that is valid for at least a few more minutes.

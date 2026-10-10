@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod fake;
+pub mod graph;
 pub mod onelake;
 pub mod rows;
 
@@ -13,12 +14,14 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use futures::future::BoxFuture;
 use futures::{StreamExt, TryStreamExt};
-use serde_json::Value;
+use reqwest::Method;
+use serde_json::{Value, json};
 
 use crate::auth::{FABRIC, TokenProvider};
 use crate::resources::{Kind, Row, job_type_for};
-use crate::source::{Action, DataSource, PREVIEW_BYTES, Part, Query, table_of};
+use crate::source::{Action, DataSource, Movable, PREVIEW_BYTES, Part, Query, table_of};
 pub use client::Client;
+use graph::Graph;
 use onelake::OneLake;
 use rows::WsData;
 
@@ -42,6 +45,7 @@ type Cached<T> = Arc<Mutex<Option<(Instant, T)>>>;
 struct Inner {
     client: Client,
     lake: OneLake,
+    graph: Graph,
     tokens: Arc<dyn TokenProvider>,
     spaces: Mutex<HashMap<String, (Instant, Arc<WsData>)>>,
     capacities: Cached<Vec<Value>>,
@@ -49,19 +53,25 @@ struct Inner {
 
 impl FabricSource {
     pub fn new(tokens: Arc<dyn TokenProvider>) -> FabricSource {
-        let lake = OneLake::new(tokens.clone());
-        FabricSource::with_clients(Client::new(tokens.clone()), lake, tokens)
+        FabricSource::with_clients(
+            Client::new(tokens.clone()),
+            OneLake::new(tokens.clone()),
+            Graph::new(tokens.clone()),
+            tokens,
+        )
     }
 
     pub fn with_clients(
         client: Client,
         lake: OneLake,
+        graph: Graph,
         tokens: Arc<dyn TokenProvider>,
     ) -> FabricSource {
         FabricSource {
             inner: Arc::new(Inner {
                 client,
                 lake,
+                graph,
                 tokens,
                 spaces: Mutex::new(HashMap::new()),
                 capacities: Arc::default(),
@@ -244,6 +254,17 @@ impl Inner {
     }
 
     async fn act(&self, action: Action) -> Result<String> {
+        let result = self.write(&action).await;
+        // Folder and item listings of this workspace are stale now, even if
+        // the write failed halfway.
+        if !matches!(action, Action::RunJob { .. } | Action::CancelJob { .. }) {
+            self.spaces.lock().unwrap().remove(action.workspace());
+        }
+        result
+    }
+
+    async fn write(&self, action: &Action) -> Result<String> {
+        let c = &self.client;
         match action {
             Action::RunJob {
                 workspace,
@@ -254,7 +275,7 @@ impl Inner {
                     "workspaces/{workspace}/items/{}/jobs/instances?jobType={job_type}",
                     item.id
                 );
-                let location = self.client.post_accepted(&path).await?;
+                let location = c.post_accepted(&path).await?;
                 let run = location
                     .as_deref()
                     .and_then(|l| l.rsplit('/').next())
@@ -270,8 +291,145 @@ impl Inner {
                     "workspaces/{workspace}/items/{}/jobs/instances/{job}/cancel",
                     item.id
                 );
-                self.client.post_accepted(&path).await?;
+                c.post_accepted(&path).await?;
                 Ok(format!("cancel requested for {} run {job}", item.name))
+            }
+            Action::RenameItem {
+                workspace,
+                item,
+                name,
+            } => {
+                let path = format!("workspaces/{workspace}/items/{}", item.id);
+                c.call(Method::PATCH, &path, Some(json!({"displayName": name})))
+                    .await?;
+                Ok(format!("renamed {} to {name}", item.name))
+            }
+            Action::DescribeItem {
+                workspace,
+                item,
+                description,
+            } => {
+                let path = format!("workspaces/{workspace}/items/{}", item.id);
+                c.call(
+                    Method::PATCH,
+                    &path,
+                    Some(json!({"description": description})),
+                )
+                .await?;
+                Ok(format!("updated the description of {}", item.name))
+            }
+            Action::DeleteItem { workspace, item } => {
+                let path = format!("workspaces/{workspace}/items/{}", item.id);
+                c.call(Method::DELETE, &path, None).await?;
+                Ok(format!("deleted {} {}", item.item_type, item.name))
+            }
+            Action::NewFolder {
+                workspace,
+                parent,
+                name,
+            } => {
+                let mut body = json!({"displayName": name});
+                if let Some(p) = parent {
+                    body["parentFolderId"] = p.id.clone().into();
+                }
+                let path = format!("workspaces/{workspace}/folders");
+                c.call(Method::POST, &path, Some(body)).await?;
+                Ok(format!("created folder {name}"))
+            }
+            Action::RenameFolder {
+                workspace,
+                folder,
+                name,
+            } => {
+                let path = format!("workspaces/{workspace}/folders/{}", folder.id);
+                c.call(Method::PATCH, &path, Some(json!({"displayName": name})))
+                    .await?;
+                Ok(format!("renamed folder {} to {name}", folder.name))
+            }
+            Action::DeleteFolder { workspace, folder } => {
+                // Fabric refuses a non-empty folder too; checking first gives
+                // a clearer message.
+                let data = self.workspace(workspace, true).await?;
+                let inside = |v: &Value, key: &str| v[key].as_str() == Some(&folder.id);
+                let n = data.items.iter().filter(|i| inside(i, "folderId")).count()
+                    + data
+                        .folders
+                        .iter()
+                        .filter(|f| inside(f, "parentFolderId"))
+                        .count();
+                if n > 0 {
+                    anyhow::bail!("folder {} isn't empty ({n} inside)", folder.name);
+                }
+                let path = format!("workspaces/{workspace}/folders/{}", folder.id);
+                c.call(Method::DELETE, &path, None).await?;
+                Ok(format!("deleted folder {}", folder.name))
+            }
+            Action::Move {
+                workspace,
+                what,
+                to,
+            } => {
+                let path = match what {
+                    Movable::Item(i) => format!("workspaces/{workspace}/items/{}/move", i.id),
+                    Movable::Folder(f) => format!("workspaces/{workspace}/folders/{}/move", f.id),
+                };
+                let body = match to {
+                    Some(t) => json!({"targetFolderId": t.id}),
+                    None => json!({}),
+                };
+                c.call(Method::POST, &path, Some(body)).await?;
+                let dest = to
+                    .as_ref()
+                    .map_or("the workspace root", |t| t.name.as_str());
+                Ok(format!("moved {} to {dest}", what.describe()))
+            }
+            Action::AddRole {
+                workspace,
+                principal,
+                role,
+            } => {
+                let p = self.graph.resolve(principal).await?;
+                let path = format!("workspaces/{workspace}/roleAssignments");
+                let body = json!({"principal": {"id": p.id, "type": p.kind}, "role": role});
+                c.call(Method::POST, &path, Some(body)).await?;
+                Ok(format!("gave {} ({}) the {role} role", p.name, p.kind))
+            }
+            Action::SetRole {
+                workspace,
+                assignment,
+                role,
+            } => {
+                let path = format!("workspaces/{workspace}/roleAssignments/{}", assignment.id);
+                c.call(Method::PATCH, &path, Some(json!({"role": role})))
+                    .await?;
+                Ok(format!("{} is now {role}", assignment.name))
+            }
+            Action::RemoveRole {
+                workspace,
+                assignment,
+            } => {
+                let path = format!("workspaces/{workspace}/roleAssignments/{}", assignment.id);
+                c.call(Method::DELETE, &path, None).await?;
+                Ok(format!("removed {}", assignment.name))
+            }
+            Action::DeleteShortcut {
+                workspace,
+                item,
+                path,
+                name,
+            } => {
+                let at: Vec<String> = path
+                    .split('/')
+                    .chain([name.as_str()])
+                    .map(|p| urlencoding::encode(p).into_owned())
+                    .collect();
+                let url = format!(
+                    "workspaces/{workspace}/items/{}/shortcuts/{}",
+                    item.id,
+                    at.join("/")
+                );
+                c.call(Method::DELETE, &url, None).await?;
+                Ok(format!("deleted shortcut {path}/{name}"))
             }
         }
     }
@@ -384,9 +542,11 @@ mod tests {
     async fn source(server: &MockServer) -> FabricSource {
         let tokens: Arc<dyn TokenProvider> = Arc::new(StaticToken);
         let lake = OneLake::with_bases(tokens.clone(), &server.uri(), &server.uri());
+        let graph = Graph::with_base(tokens.clone(), format!("{}/graph", server.uri()));
         FabricSource::with_clients(
             Client::with_base(tokens.clone(), server.uri()),
             lake,
+            graph,
             tokens,
         )
     }
@@ -523,6 +683,197 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(msg, "cancel requested for load run run-9");
+    }
+
+    fn item(id: &str, name: &str) -> crate::source::ItemRef {
+        crate::source::ItemRef {
+            id: id.into(),
+            name: name.into(),
+            item_type: "Notebook".into(),
+        }
+    }
+
+    fn folder(id: &str, name: &str) -> Ref {
+        Ref {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    async fn mount_workspace(server: &MockServer, folders: Value, items: Value, times: u64) {
+        Mock::given(path("/workspaces/w1/folders"))
+            .and(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": folders})))
+            .expect(times)
+            .mount(server)
+            .await;
+        Mock::given(path("/workspaces/w1/items"))
+            .and(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": items})))
+            .expect(times)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_write_drops_the_workspace_listing() {
+        let server = MockServer::start().await;
+        mount_workspace(
+            &server,
+            json!([]),
+            json!([{"id": "nb", "displayName": "a"}]),
+            2,
+        )
+        .await;
+        Mock::given(method("PATCH"))
+            .and(path("/workspaces/w1/items/nb"))
+            .and(wiremock::matchers::body_json(json!({"displayName": "b"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "nb"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let q = Query::new(Kind::Items, ws_scope());
+        src.fetch(q.clone(), false).await.unwrap();
+        let msg = src
+            .act(Action::RenameItem {
+                workspace: "w1".into(),
+                item: item("nb", "a"),
+                name: "b".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(msg, "renamed a to b");
+        // Not forced, but the cached listing is gone: a second GET each.
+        src.fetch(q, false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn non_empty_folders_are_not_deleted() {
+        let server = MockServer::start().await;
+        mount_workspace(
+            &server,
+            json!([{"id": "f1", "displayName": "ingest"}, {"id": "f2", "displayName": "empty"}]),
+            json!([{"id": "nb", "displayName": "a", "folderId": "f1"}]),
+            2,
+        )
+        .await;
+        Mock::given(method("DELETE"))
+            .and(path("/workspaces/w1/folders/f2"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let del = |f: Ref| Action::DeleteFolder {
+            workspace: "w1".into(),
+            folder: f,
+        };
+        let e = src.act(del(folder("f1", "ingest"))).await.unwrap_err();
+        assert_eq!(e.to_string(), "folder ingest isn't empty (1 inside)");
+        src.act(del(folder("f2", "empty"))).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn moves_create_and_shortcuts_hit_their_endpoints() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/workspaces/w1/items/nb/move"))
+            .and(wiremock::matchers::body_json(
+                json!({"targetFolderId": "f1"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": []})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/workspaces/w1/folders/f2/move"))
+            .and(wiremock::matchers::body_json(json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "f2"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/workspaces/w1/folders"))
+            .and(wiremock::matchers::body_json(
+                json!({"displayName": "new", "parentFolderId": "f1"}),
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "f3"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/workspaces/w1/items/lh/shortcuts/Files/my%20data/claims",
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let ws = || "w1".to_owned();
+        src.act(Action::Move {
+            workspace: ws(),
+            what: Movable::Item(item("nb", "a")),
+            to: Some(folder("f1", "ingest")),
+        })
+        .await
+        .unwrap();
+        let msg = src
+            .act(Action::Move {
+                workspace: ws(),
+                what: Movable::Folder(folder("f2", "ingest/shop")),
+                to: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(msg, "moved folder ingest/shop to the workspace root");
+        src.act(Action::NewFolder {
+            workspace: ws(),
+            parent: Some(folder("f1", "ingest")),
+            name: "new".into(),
+        })
+        .await
+        .unwrap();
+        src.act(Action::DeleteShortcut {
+            workspace: ws(),
+            item: item("lh", "bronze"),
+            path: "Files/my data".into(),
+            name: "claims".into(),
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_role_resolves_the_principal_first() {
+        let server = MockServer::start().await;
+        Mock::given(path("/graph/users/jane@x.org"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"id": "u1", "displayName": "Jane"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/workspaces/w1/roleAssignments"))
+            .and(wiremock::matchers::body_json(
+                json!({"principal": {"id": "u1", "type": "User"}, "role": "Viewer"}),
+            ))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "u1"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let msg = src
+            .act(Action::AddRole {
+                workspace: "w1".into(),
+                principal: "jane@x.org".into(),
+                role: "Viewer".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(msg, "gave Jane (User) the Viewer role");
     }
 
     #[test]

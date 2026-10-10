@@ -43,10 +43,16 @@ color = "#89b4fa"
 | `r` / `ctrl-k` | run the item / cancel the selected run (both ask first; blocked on read-only profiles) |
 | `s` | schedules of the item; in OneLake, the schema of a table folder |
 | `D` | download a OneLake file to the current directory |
+| `e` / `E` | rename an item or folder (in roles: change the role) / edit an item's description |
+| `ctrl-d` | delete an item or folder (type its name to confirm), a role assignment or a shortcut |
+| `n` | new folder in the folder on screen |
+| `m` then `p` | pick up an item or folder, open the destination folder, drop it there |
+| `a` | in roles: give a user, group or app a role (email, object id, or exact group/app name) |
 | `ctrl-p` | switch profile |
 | `ctrl-r` / `ctrl-e` / `?` | refresh / compact header / help |
 
-Every run and cancel is recorded in `~/.local/state/fablic/journal.log`.
+Every write (runs, cancels, renames, deletes, moves, role changes) is blocked on read-only
+profiles and recorded in `~/.local/state/fablic/journal.log`.
 
 ## Development
 

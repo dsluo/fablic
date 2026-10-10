@@ -13,7 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, Paragraph};
 
-use crate::app::{App, Level, Mode};
+use crate::app::{App, Level, Mode, Purpose};
 use crate::theme::Theme;
 
 const STATUS_TTL: Duration = Duration::from_secs(5);
@@ -43,6 +43,7 @@ pub fn draw(f: &mut Frame, app: &mut App, theme: &Theme) {
         Mode::Help => draw_help(f, body, theme),
         Mode::Profiles => draw_profiles(f, body, app, theme),
         Mode::Confirm => draw_confirm(f, body, app, theme),
+        Mode::Prompt => draw_input(f, body, app, theme),
         _ => {}
     }
 }
@@ -123,7 +124,16 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
             Line::styled(s.text.clone(), Style::new().fg(color))
         }
         (None, Some(e)) => Line::styled(format!("error: {e}"), Style::new().fg(t.bad)),
-        (None, None) => Line::styled("? help  :q quit", Style::new().fg(t.faint)),
+        (None, None) => match &app.moving {
+            Some(m) => Line::styled(
+                format!(
+                    "moving {}: p drops it in the folder on screen, m on it puts it back",
+                    m.what.describe()
+                ),
+                Style::new().fg(t.warn),
+            ),
+            None => Line::styled("? help  :q quit", Style::new().fg(t.faint)),
+        },
     };
     f.render_widget(Paragraph::new(line), area);
 }
@@ -175,6 +185,11 @@ pub const HELP: &[(&str, &str)] = &[
     ("r", "run the item (asks first)"),
     ("ctrl-k", "cancel the selected run (asks first)"),
     ("s", "schedules; in OneLake, a table's schema"),
+    ("e / E", "rename; change a role / edit description"),
+    ("ctrl-d", "delete (items and folders: type the name)"),
+    ("n", "new folder here"),
+    ("m then p", "pick up an item or folder, drop it here"),
+    ("a", "in roles: give someone a role"),
     ("D", "download a OneLake file to ./"),
     ("ctrl-p", "switch profile (identity)"),
     ("j k g G", "move, top, bottom"),
@@ -240,6 +255,53 @@ fn draw_confirm(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
     let block = overlay_block(" confirm ", t).border_style(Style::new().fg(t.warn));
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(lines).centered().block(block), area);
+}
+
+/// A typed prompt for a write: what enter does, the input, and a hint.
+fn draw_input(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
+    let Some(p) = &app.prompt else {
+        return;
+    };
+    let widest = [
+        p.title.chars().count(),
+        p.hint.chars().count(),
+        app.input.chars().count() + 2,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0) as u16;
+    let w = (widest + 6).clamp(50, body.width);
+    let area = Rect::new(
+        body.x + (body.width - w) / 2,
+        body.y + body.height.saturating_sub(6) / 2,
+        w,
+        6.min(body.height),
+    );
+    let lines = vec![
+        Line::styled(
+            p.title.clone(),
+            Style::new().fg(t.text).add_modifier(Modifier::BOLD),
+        ),
+        Line::from(vec![
+            Span::styled("> ", Style::new().fg(t.accent)),
+            Span::styled(app.input.clone(), Style::new().fg(t.text)),
+        ]),
+        Line::styled(p.hint.clone(), Style::new().fg(t.dim)),
+        Line::styled(
+            format!("as {} ({})", app.profile.name, app.profile.account),
+            Style::new().fg(t.faint),
+        ),
+    ];
+    let (title, border) = match p.purpose {
+        Purpose::Delete { .. } => (" delete ", t.bad),
+        _ => (" write ", t.warn),
+    };
+    let block = overlay_block(title, t).border_style(Style::new().fg(border));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(Paragraph::new(lines).block(block), area);
+    let x = inner.x + 2 + app.input.chars().count() as u16;
+    f.set_cursor_position((x.min(inner.right().saturating_sub(1)), inner.y + 1));
 }
 
 fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
@@ -380,6 +442,21 @@ mod tests {
     fn snapshot_palette() {
         let mut app = fake_app();
         type_str(&mut app, ":no");
+        insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn snapshot_delete_prompt() {
+        let mut app = fake_app();
+        steps(
+            &mut app,
+            &[KeyCode::Char('j'), KeyCode::Enter, KeyCode::Char('G')],
+        );
+        app.on_key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('d'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        type_str(&mut app, "transf");
         insta::assert_snapshot!(render(&mut app));
     }
 

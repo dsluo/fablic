@@ -7,25 +7,16 @@ use std::path::Path;
 use crate::source::Action;
 
 pub fn line(profile: &str, action: &Action, result: &Result<String, String>) -> String {
-    let target = match action {
-        Action::RunJob {
-            workspace, item, ..
-        } => format!("workspace={workspace} item={}", item.id),
-        Action::CancelJob {
-            workspace,
-            item,
-            job,
-        } => format!("workspace={workspace} item={} job={job}", item.id),
-    };
     let outcome = match result {
         Ok(m) => format!("ok: {m}"),
         Err(e) => format!("error: {e}"),
     };
     let flat = |s: String| s.replace(['\t', '\n'], " ");
     format!(
-        "{}\t{profile}\t{}\t{target}\t{}\n",
+        "{}\t{profile}\t{}\t{}\t{}\n",
         chrono::Local::now().to_rfc3339(),
         flat(action.describe()),
+        flat(action.target()),
         flat(outcome)
     )
 }

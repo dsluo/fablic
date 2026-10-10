@@ -114,6 +114,27 @@ impl Client {
         }
     }
 
+    /// A plain request (PATCH, DELETE, a POST that answers 200/201) with an
+    /// optional JSON body. Returns the response body, or null when empty.
+    pub async fn call(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
+        let url = self.url(path);
+        let resp = self
+            .send(|| {
+                let req = self.http.request(method.clone(), &url);
+                match &body {
+                    Some(b) => req.json(b),
+                    None => req.header("content-length", "0"),
+                }
+            })
+            .await?;
+        let text = resp.text().await?;
+        Ok(if text.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&text)?
+        })
+    }
+
     /// POST that answers 202 Accepted and points at what it started (job
     /// runs, cancellations). Returns the `Location` header, if any.
     pub async fn post_accepted(&self, path: &str) -> Result<Option<String>> {

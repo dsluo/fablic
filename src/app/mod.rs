@@ -7,6 +7,7 @@ mod jobs;
 mod navigation;
 mod onelake;
 mod profiles;
+mod writes;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -20,6 +21,7 @@ use crate::resources::{Health, Kind, Row};
 use crate::source::{Action, Part, Query, Scope};
 
 pub use command::Suggestion;
+pub use writes::{Moving, Prompt, Purpose};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -31,6 +33,8 @@ pub enum Mode {
     Profiles,
     /// A write is waiting for y/N.
     Confirm,
+    /// Typing a name, description, principal or role for a write.
+    Prompt,
 }
 
 /// One table view: what is listed, how it is filtered, and where the cursor was.
@@ -165,6 +169,10 @@ pub struct App {
     pub compact: bool,
     /// The write waiting on the confirm prompt.
     pub pending: Option<Action>,
+    /// The open typed prompt (`Mode::Prompt`).
+    pub prompt: Option<Prompt>,
+    /// What `m` picked up for `p` to move.
+    pub moving: Option<Moving>,
     /// Keep a jobs view polling until then, even with nothing running yet.
     live_until: Option<Instant>,
     pub quit: bool,
@@ -202,6 +210,8 @@ impl App {
             picker: active,
             compact: false,
             pending: None,
+            prompt: None,
+            moving: None,
             live_until: None,
             quit: false,
             page: 20,
@@ -354,6 +364,7 @@ impl App {
             Mode::Help => self.mode = Mode::Table,
             Mode::Profiles => self.key_profiles(key),
             Mode::Confirm => self.key_confirm(key),
+            Mode::Prompt => self.key_prompt(key),
         }
     }
 
@@ -383,6 +394,13 @@ impl App {
             (KeyCode::Char('s'), false) if self.kind() == Kind::OneLake => self.schema(),
             (KeyCode::Char('s'), false) => self.goto(Kind::Schedules, None, false),
             (KeyCode::Char('D'), false) => self.download(),
+            (KeyCode::Char('e'), false) => self.rename(),
+            (KeyCode::Char('E'), false) => self.edit_description(),
+            (KeyCode::Char('d'), true) => self.delete(),
+            (KeyCode::Char('n'), false) => self.new_folder(),
+            (KeyCode::Char('m'), false) => self.mark_move(),
+            (KeyCode::Char('p'), false) => self.paste(),
+            (KeyCode::Char('a'), false) => self.add_role(),
             (KeyCode::Char('p'), true) => self.open_profiles(),
             (KeyCode::Char('r'), true) => {
                 self.refresh(true);
