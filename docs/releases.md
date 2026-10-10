@@ -14,10 +14,10 @@ Starting at 1.0, features increment minor and breaking changes increment major.
 Tags and release names use `X.Y.Z` without a `v` prefix. The bot maintains the
 manifest after bootstrap; do not bump release versions separately by hand.
 
-The CI workflow runs `mise run test`, `mise run lint`, and
-`mise run lint-workflows` on Linux and macOS for every PR, including
-release PRs. It also runs on pushes to `main` and merge queue events. Tests and
-builds use the committed Cargo lockfile.
+The CI workflow runs `mise run --skip-tools test`, `mise run --skip-tools lint`,
+and `mise run --skip-tools lint-workflows` on Linux and macOS for every PR,
+including release PRs. It also runs on pushes to `main` and merge queue events.
+Tests and builds use the committed Cargo lockfile.
 
 Each job installs its required tools explicitly, then runs tasks with
 `mise run --skip-tools`. This keeps task execution from installing unrelated
