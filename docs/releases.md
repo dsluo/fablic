@@ -27,11 +27,18 @@ Each job installs its required tools explicitly, then runs tasks with
 development tools such as `cargo-insta`, whose prebuilt binaries do not cover
 every release target.
 
+CI also builds and smoke-tests all six targets in the matrix below on PRs,
+pushes to `main`, and merge queue events. The matrix and build steps live in
+`.github/workflows/build.yaml`, which both CI and releases call. CI builds use
+the commit under test; release builds use the validated tag and additionally
+package and upload archives. Release runs perform these builds after their
+test and lint checks pass.
+
 Merge the release PR when its version and changelog are ready and its checks
 pass. Release Please then creates the tag and publishes the GitHub Release.
-The `Release` workflow checks the tag against `Cargo.toml` and runs the CI
-checks against the tagged code before building binaries. Each native build
-runs `fablic --fake --snapshot 'j enter F'` without sign-in or tenant data.
+The `Release` workflow checks the tag against `Cargo.toml` and runs tests and
+lint against the tagged code before calling the shared build workflow. Each
+native build runs `fablic --fake --snapshot 'j enter F'` without sign-in or tenant data.
 
 The build matrix provides:
 
@@ -63,6 +70,7 @@ on generated releases; the default `GITHUB_TOKEN` suppresses those events.
 See [Release Please's token requirements](https://github.com/googleapis/release-please-action#github-credentials).
 
 Protect `main` with the CI checks `Check (ubuntu-24.04)`, `Check (macos-15)`, and
-`Check (windows-2025)` required before merging. The release bot prepares PRs;
+`Check (windows-2025)` required before merging. Also require all six build
+checks from the target matrix above. The release bot prepares PRs;
 merging remains the release decision. Binary uploads use the workflow's built-in `GITHUB_TOKEN`
 with Contents write permission, and need no distribution service secrets.

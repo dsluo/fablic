@@ -52,3 +52,8 @@ jobs:
 
       - name: Check lockfile is current
         run: git diff --exit-code -- Cargo.lock
+
+  build:
+    name: Build release targets
+    if: github.event_name != 'release'
+    uses: ./.github/workflows/build.yaml
