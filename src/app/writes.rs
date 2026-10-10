@@ -45,6 +45,10 @@ pub enum Purpose {
         principal: Option<String>,
         assignment: Option<Ref>,
     },
+    /// A new name for a profile (local: not a Fabric write).
+    RenameProfile {
+        account: String,
+    },
     /// The action runs once `name` is typed exactly.
     Delete {
         action: Action,
@@ -151,7 +155,7 @@ impl App {
     pub(super) fn act(&mut self, action: Action) {
         self.flash(Level::Info, format!("{}…", action.describe()));
         self.effects.push(Effect::Act {
-            profile: self.profile.name.clone(),
+            profile: self.profile.account.clone(),
             action,
         });
     }
@@ -423,9 +427,10 @@ impl App {
     pub(super) fn key_prompt(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
+                let back = self.prompt_returns_to();
                 self.prompt = None;
                 self.input.clear();
-                self.mode = Mode::Table;
+                self.mode = back;
                 self.flash(Level::Info, "cancelled");
             }
             KeyCode::Enter => return self.submit(),
@@ -569,6 +574,21 @@ impl App {
                     (None, None) => return self.close_prompt("nothing to do"),
                 }
             }
+            Purpose::RenameProfile { account } => {
+                if text.is_empty() {
+                    return self.flash(Level::Warn, need("the name"));
+                }
+                // Stay in the prompt to try another name.
+                if self
+                    .profiles
+                    .iter()
+                    .any(|p| p.name == text && p.account != account)
+                {
+                    return self.flash(Level::Warn, format!("another profile is named {text}"));
+                }
+                self.close_prompt("");
+                return self.apply_profile_name(&account, text);
+            }
             Purpose::Delete { action, name } => {
                 if self.input != name {
                     return self.flash(Level::Warn, format!("type {name} exactly to delete it"));
@@ -580,10 +600,19 @@ impl App {
         self.act(action);
     }
 
+    /// Profile renames go back to the picker; everything else to the table.
+    fn prompt_returns_to(&self) -> Mode {
+        match self.prompt.as_ref().map(|p| &p.purpose) {
+            Some(Purpose::RenameProfile { .. }) => Mode::Profiles,
+            _ => Mode::Table,
+        }
+    }
+
     fn close_prompt(&mut self, note: &str) {
+        let back = self.prompt_returns_to();
         self.prompt = None;
         self.input.clear();
-        self.mode = Mode::Table;
+        self.mode = back;
         if !note.is_empty() {
             self.flash(Level::Info, note);
         }
@@ -781,7 +810,7 @@ mod tests {
         assert!(matches!(what, Movable::Item(i) if i.id == "it-5"));
         assert_eq!(to.as_ref().map(|t| t.name.as_str()), Some("ingest"));
         app.effects = vec![Effect::Act {
-            profile: "fake".into(),
+            profile: app.profile.account.clone(),
             action: a[0].clone(),
         }];
         settle(&mut app);
@@ -860,6 +889,7 @@ mod tests {
                 account: "a@x".into(),
                 readonly: true,
                 color: None,
+                auth: Default::default(),
             }],
             0,
         );

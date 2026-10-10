@@ -24,7 +24,7 @@ use ratatui::style::Color;
 use ratatui::{DefaultTerminal, Terminal};
 use tokio::sync::mpsc;
 
-use app::{App, ProfileInfo};
+use app::{App, Effect, Msg, ProfileInfo};
 use auth::AzCli;
 use config::Config;
 use effects::Ctx;
@@ -88,9 +88,10 @@ async fn main() -> Result<()> {
             account: "fake data".into(),
             readonly: true,
             color: None,
+            auth: Default::default(),
         };
         let src: SharedSource = Arc::new(FakeSource);
-        (vec![p], 0, HashMap::from([("fake".to_owned(), src)]))
+        (vec![p], 0, HashMap::from([("fake data".to_owned(), src)]))
     } else {
         live_profiles(&args).await?
     };
@@ -101,19 +102,12 @@ async fn main() -> Result<()> {
         return snapshot(app, sources, &steps).await;
     }
 
-    // Get every profile's token in the background so switching is instant.
-    for (name, src) in sources.iter() {
-        let (name, fut) = (name.clone(), src.warm());
-        tokio::spawn(async move {
-            if let Err(e) = fut.await {
-                tracing::warn!(profile = %name, "token prefetch failed: {e:#}");
-            }
-        });
-    }
-
+    // The app checks every profile's sign-in on start, which also gets
+    // their tokens ahead of time so switching is instant.
     let theme = Theme::detect();
+    let config_path = if args.fake { None } else { Config::path() };
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, app, sources, theme).await;
+    let result = run(&mut terminal, app, sources, theme, config_path).await;
     ratatui::restore();
     result
 }
@@ -134,9 +128,10 @@ async fn live_profiles(
     for p in config.profiles {
         let tokens = Arc::new(AzCli::new(&p.account));
         let src: SharedSource = Arc::new(FabricSource::new(tokens));
-        sources.insert(p.name.clone(), src);
+        sources.insert(p.account.clone(), src);
         profiles.push(ProfileInfo {
             color: p.color.as_deref().and_then(|c| Color::from_str(c).ok()),
+            auth: Default::default(),
             readonly: p.readonly || args.readonly,
             name: p.name,
             account: p.account,
@@ -197,17 +192,37 @@ async fn run(
     mut app: App,
     sources: Sources,
     theme: Theme,
+    config_path: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut events = EventStream::new();
+    // Dropped while az login has the terminal, so it doesn't eat keys meant for az.
+    let mut events = Some(EventStream::new());
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let ctx = Arc::new(Ctx {
         open_urls: true,
         journal_dir: config::state_dir(),
         download_dir: std::env::current_dir().ok(),
+        config_path,
     });
     loop {
         for effect in app.take_effects() {
+            if let Effect::Login { profile } = effect {
+                drop(events.take());
+                ratatui::restore();
+                println!("Signing {profile} in again with az…");
+                let result = auth::login(std::path::Path::new("az"), Some(&profile), None).await;
+                *terminal = ratatui::init();
+                terminal.clear()?;
+                events = Some(EventStream::new());
+                if let Some(src) = sources.get(&profile) {
+                    src.forget();
+                }
+                app.on_msg(Msg::LoggedIn {
+                    profile,
+                    result: result.map_err(|e| format!("{e:#}")),
+                });
+                continue;
+            }
             let (tx, sources, ctx) = (tx.clone(), sources.clone(), ctx.clone());
             tokio::spawn(async move {
                 if let Some(msg) = effects::perform(effect, &sources, &ctx).await {
@@ -219,8 +234,11 @@ async fn run(
         if app.quit {
             return Ok(());
         }
+        let Some(stream) = events.as_mut() else {
+            continue;
+        };
         tokio::select! {
-            ev = events.next() => match ev {
+            ev = stream.next() => match ev {
                 Some(Ok(Event::Key(k))) if k.kind == KeyEventKind::Press => app.on_key(k),
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e.into()),

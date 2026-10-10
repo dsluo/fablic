@@ -62,7 +62,7 @@ impl App {
         };
         self.mode = Mode::Detail;
         self.effects.push(Effect::Detail {
-            profile: self.profile.name.clone(),
+            profile: self.profile.account.clone(),
             title,
             request,
         });

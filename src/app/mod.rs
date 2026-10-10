@@ -73,6 +73,20 @@ pub enum Effect {
         profile: String,
         action: Action,
     },
+    /// See whether a profile can get a token.
+    Check {
+        profile: String,
+    },
+    /// Sign a profile in again with az. Needs the terminal, so the event
+    /// loop runs it itself.
+    Login {
+        profile: String,
+    },
+    /// Save a profile's new name to the config file.
+    RenameProfile {
+        profile: String,
+        name: String,
+    },
 }
 
 /// What the detail view should show once fetched.
@@ -111,6 +125,16 @@ pub enum Msg {
     },
     /// Something worth a line in the status bar.
     Status(Level, String),
+    /// The result of a `Check`.
+    Auth {
+        profile: String,
+        result: Result<(), String>,
+    },
+    /// `Login` finished (or failed).
+    LoggedIn {
+        profile: String,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,9 +161,47 @@ pub struct Detail {
 #[derive(Debug, Clone)]
 pub struct ProfileInfo {
     pub name: String,
+    /// Also the key for the profile's source and cached rows, since the
+    /// name can change while fablic runs.
     pub account: String,
     pub readonly: bool,
     pub color: Option<Color>,
+    pub auth: Auth,
+}
+
+/// Whether a profile can get tokens, as last checked.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Auth {
+    #[default]
+    Unknown,
+    Checking,
+    SignedIn,
+    /// The sign-in ran out (session limit) or was never made.
+    Expired,
+    Failed(String),
+}
+
+impl Auth {
+    /// Read a failed token request: the messages az and Entra use for a
+    /// sign-in that has to be done again count as `Expired`.
+    pub fn from_error(e: &str) -> Auth {
+        const AGAIN: &[&str] = &[
+            "AADSTS50173",
+            "AADSTS70043",
+            "AADSTS70044",
+            "AADSTS700082",
+            "AADSTS50078",
+            "AADSTS50079",
+            "Interactive authentication is needed",
+            "az login",
+            "fablic login",
+        ];
+        if AGAIN.iter().any(|m| e.contains(m)) {
+            Auth::Expired
+        } else {
+            Auth::Failed(e.to_owned())
+        }
+    }
 }
 
 /// How often a jobs view with active runs refreshes itself.
@@ -221,6 +283,7 @@ impl App {
             cache: HashMap::new(),
         };
         app.load();
+        app.check_all();
         app
     }
 
@@ -247,7 +310,7 @@ impl App {
 
     /// Show cached rows for the current frame (if any) and fetch fresh ones.
     fn load(&mut self) {
-        let key = (self.profile.name.clone(), self.frame.query.clone());
+        let key = (self.profile.account.clone(), self.frame.query.clone());
         match self.cache.get(&key) {
             Some(rows) => {
                 self.rows = rows.clone();
@@ -268,7 +331,7 @@ impl App {
         self.error = None;
         self.fetched_at = Some(Instant::now());
         self.effects.push(Effect::Fetch {
-            profile: self.profile.name.clone(),
+            profile: self.profile.account.clone(),
             generation: self.generation,
             query: self.frame.query.clone(),
             force,
@@ -284,7 +347,7 @@ impl App {
                 self.loading = false;
                 match result {
                     Ok(rows) => {
-                        let key = (self.profile.name.clone(), self.frame.query.clone());
+                        let key = (self.profile.account.clone(), self.frame.query.clone());
                         self.cache.insert(key, rows.clone());
                         self.rows = rows;
                         self.apply_filter();
@@ -311,6 +374,14 @@ impl App {
             }
             Msg::Acted { action, result } => self.on_acted(action, result),
             Msg::Status(level, text) => self.flash(level, text),
+            Msg::Auth { profile, result } => self.set_auth(
+                &profile,
+                match result {
+                    Ok(()) => Auth::SignedIn,
+                    Err(e) => Auth::from_error(&e),
+                },
+            ),
+            Msg::LoggedIn { profile, result } => self.on_logged_in(&profile, result),
         }
     }
 
@@ -495,6 +566,7 @@ pub(crate) mod tests {
             account: "me@example.com".into(),
             readonly: false,
             color: None,
+            auth: Default::default(),
         };
         let mut app = App::new(vec![profile], 0);
         settle(&mut app);
@@ -508,7 +580,11 @@ pub(crate) mod tests {
             .build()
             .unwrap();
         let src: crate::source::SharedSource = std::sync::Arc::new(FakeSource);
-        let sources = std::collections::HashMap::from([(app.profile.name.clone(), src)]);
+        let sources: std::collections::HashMap<_, _> = app
+            .profiles
+            .iter()
+            .map(|p| (p.account.clone(), src.clone()))
+            .collect();
         let ctx = crate::effects::Ctx {
             download_dir: Some(".".into()),
             ..Default::default()

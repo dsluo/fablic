@@ -25,6 +25,8 @@ pub struct AzCli {
     account: String,
     az: PathBuf,
     state: Mutex<State>,
+    /// Set by `forget`; the next `token` call starts from scratch.
+    stale: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -64,6 +66,7 @@ impl AzCli {
             account: account.into(),
             az: az.into(),
             state: Mutex::new(State::default()),
+            stale: Default::default(),
         }
     }
 
@@ -139,6 +142,9 @@ impl TokenProvider for AzCli {
             // Holding the lock across the az call means concurrent requests
             // share one az process instead of each spawning their own.
             let mut state = self.state.lock().await;
+            if self.stale.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                *state = State::default();
+            }
             let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
             if let Some((tok, exp)) = state.tokens.get(resource)
                 && *exp > now + MARGIN.as_secs()
@@ -153,6 +159,10 @@ impl TokenProvider for AzCli {
 
     fn account(&self) -> &str {
         &self.account
+    }
+
+    fn forget(&self) {
+        self.stale.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

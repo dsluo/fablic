@@ -578,6 +578,10 @@ impl DataSource for FabricSource {
         Box::pin(async move { inner.act(action).await })
     }
 
+    fn forget(&self) {
+        self.inner.tokens.forget();
+    }
+
     fn warm(&self) -> BoxFuture<'static, Result<()>> {
         let inner = self.inner.clone();
         Box::pin(async move { inner.tokens.token(FABRIC).await.map(|_| ()) })

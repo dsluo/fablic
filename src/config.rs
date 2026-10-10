@@ -22,6 +22,10 @@ pub struct Config {
     pub default_profile: Option<String>,
     #[serde(default)]
     pub profiles: Vec<Profile>,
+    /// Names for profiles made from az accounts: account -> name. Renaming
+    /// such a profile in the picker writes here.
+    #[serde(default)]
+    pub names: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -70,6 +74,12 @@ impl Config {
             if self.profiles[..i].iter().any(|q| q.name == p.name) {
                 anyhow::bail!("two profiles are named {}; give one a name", p.name);
             }
+            if self.profiles[..i]
+                .iter()
+                .any(|q| q.account.eq_ignore_ascii_case(&p.account))
+            {
+                anyhow::bail!("two profiles use the account {}", p.account);
+            }
         }
         Ok(self)
     }
@@ -80,7 +90,9 @@ impl Config {
             self.profiles = accounts
                 .into_iter()
                 .map(|account| Profile {
-                    name: account.split('@').next().unwrap_or(&account).to_owned(),
+                    name: self.names.get(&account).cloned().unwrap_or_else(|| {
+                        account.split('@').next().unwrap_or(&account).to_owned()
+                    }),
                     account,
                     readonly: false,
                     color: None,
@@ -111,6 +123,47 @@ impl Config {
             None => Ok(0),
         }
     }
+}
+
+/// Rename the profile for `account` in the config file at `path`, keeping
+/// the rest of the file (comments, order, formatting) as it is. A profile
+/// from `[[profiles]]` gets its `name` changed; one made from an az account
+/// gets an entry in `[names]`.
+pub fn rename(path: &Path, account: &str, name: &str) -> Result<()> {
+    use toml_edit::{DocumentMut, Item, Table, value};
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut doc: DocumentMut = text
+        .parse()
+        .with_context(|| format!("in {}", path.display()))?;
+    let in_profiles = doc
+        .get_mut("profiles")
+        .and_then(Item::as_array_of_tables_mut)
+        .and_then(|list| {
+            list.iter_mut().find(|t| {
+                t.get("account")
+                    .and_then(Item::as_str)
+                    .is_some_and(|a| a.eq_ignore_ascii_case(account))
+            })
+        });
+    match in_profiles {
+        Some(t) => {
+            t["name"] = value(name);
+        }
+        None => {
+            if !doc.contains_table("names") {
+                doc["names"] = Item::Table(Table::new());
+            }
+            doc["names"][account] = value(name);
+        }
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, doc.to_string()).with_context(|| format!("writing {}", path.display()))
 }
 
 /// `$VAR/fablic`, or `~/<fallback>/fablic`. XDG layout on every platform,
@@ -180,6 +233,31 @@ mod tests {
             e.ends_with("two profiles are named default; give one a name"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn renames_keep_the_file_and_name_az_profiles() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fablic/config.toml");
+        // No file yet: an az-made profile gets a [names] entry.
+        rename(&path, "00000000-1111", "etl-sp").unwrap();
+        let c = Config::load(Some(&path))
+            .unwrap()
+            .with_az_accounts(vec!["00000000-1111".into(), "me@b.org".into()]);
+        let names: Vec<&str> = c.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["etl-sp", "me"]);
+
+        // A configured profile is renamed in place, comments and all.
+        std::fs::write(
+            &path,
+            "# mine\n[[profiles]]\nname = \"old\" # keep\naccount = \"A@x\"\n",
+        )
+        .unwrap();
+        rename(&path, "a@x", "new").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# mine\n"), "{text}");
+        assert!(text.contains("name = \"new\""), "{text}");
+        assert!(!text.contains("[names]"), "{text}");
     }
 
     #[test]

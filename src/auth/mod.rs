@@ -19,4 +19,8 @@ pub trait TokenProvider: Send + Sync {
 
     /// The identity this provider signs in as, for display and error messages.
     fn account(&self) -> &str;
+
+    /// Drop cached tokens (after signing in again), so the next request
+    /// asks for fresh ones.
+    fn forget(&self) {}
 }

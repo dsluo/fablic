@@ -3,7 +3,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, Frame, Level, Mode};
+use super::{App, Auth, Effect, Frame, Level, Mode, Prompt, Purpose};
 use crate::resources::Kind;
 use crate::source::{Query, Scope};
 
@@ -11,6 +11,95 @@ impl App {
     pub(super) fn open_profiles(&mut self) {
         self.picker = self.active;
         self.mode = Mode::Profiles;
+        self.check_all();
+    }
+
+    /// Ask every profile's source for a token, to show who is signed in.
+    pub(super) fn check_all(&mut self) {
+        for p in &mut self.profiles {
+            p.auth = Auth::Checking;
+            self.effects.push(Effect::Check {
+                profile: p.account.clone(),
+            });
+        }
+        self.profile.auth = Auth::Checking;
+    }
+
+    pub(super) fn set_auth(&mut self, account: &str, auth: Auth) {
+        for p in &mut self.profiles {
+            if p.account == account {
+                p.auth = auth.clone();
+            }
+        }
+        if self.profile.account == account {
+            self.profile.auth = auth;
+        }
+    }
+
+    pub(super) fn on_logged_in(&mut self, account: &str, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.flash(Level::Info, format!("signed in as {account}"));
+                self.set_auth(account, Auth::Checking);
+                self.effects.push(Effect::Check {
+                    profile: account.to_owned(),
+                });
+                if self.profile.account == account {
+                    self.cache.retain(|(a, _), _| a != account);
+                    self.refresh(true);
+                }
+            }
+            Err(e) => {
+                self.set_auth(account, Auth::from_error(&e));
+                self.flash(Level::Error, format!("signing in: {e}"));
+            }
+        }
+    }
+
+    /// `l` in the picker: sign the highlighted profile in again.
+    fn login(&mut self) {
+        let account = self.profiles[self.picker].account.clone();
+        self.set_auth(&account, Auth::Checking);
+        self.effects.push(Effect::Login { profile: account });
+    }
+
+    /// `e` in the picker: rename the highlighted profile.
+    fn rename_profile(&mut self) {
+        let p = &self.profiles[self.picker];
+        self.input = p.name.clone();
+        self.prompt = Some(Prompt {
+            title: format!("rename profile {}", p.name),
+            hint: format!("{} · enter saves to the config · esc cancels", p.account),
+            purpose: Purpose::RenameProfile {
+                account: p.account.clone(),
+            },
+            choice: 0,
+            place: None,
+        });
+        self.mode = Mode::Prompt;
+    }
+
+    /// Apply a new profile name, here and in the config file.
+    pub(super) fn apply_profile_name(&mut self, account: &str, name: String) {
+        if self
+            .profiles
+            .iter()
+            .any(|p| p.name == name && p.account != account)
+        {
+            return self.flash(Level::Warn, format!("another profile is named {name}"));
+        }
+        for p in &mut self.profiles {
+            if p.account == account {
+                p.name = name.clone();
+            }
+        }
+        if self.profile.account == account {
+            self.profile.name = name.clone();
+        }
+        self.effects.push(Effect::RenameProfile {
+            profile: account.to_owned(),
+            name,
+        });
     }
 
     pub(super) fn key_profiles(&mut self, key: KeyEvent) {
@@ -23,6 +112,8 @@ impl App {
                 self.mode = Mode::Table;
                 self.switch_profile(self.picker);
             }
+            KeyCode::Char('e') => self.rename_profile(),
+            KeyCode::Char('l') => self.login(),
             _ => {}
         }
     }
@@ -76,6 +167,7 @@ mod tests {
             account: a.into(),
             readonly: false,
             color: None,
+            auth: Default::default(),
         };
         let mut app = App::new(vec![p("fabric", "admin@x"), p("devops", "me@y")], 0);
         settle(&mut app);
@@ -91,7 +183,7 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.profile.name, "devops");
         let fetch = app.take_effects().pop().unwrap();
-        assert!(matches!(fetch, Effect::Fetch { profile, .. } if profile == "devops"));
+        assert!(matches!(fetch, Effect::Fetch { profile, .. } if profile == "me@y"));
     }
 
     #[test]
@@ -106,5 +198,59 @@ mod tests {
         type_str(&mut app, ":ctx");
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Profiles);
+    }
+
+    #[test]
+    fn rename_from_the_picker_keeps_the_source() {
+        let mut app = two();
+        app.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        settle(&mut app);
+        assert_eq!(app.profiles[0].auth, crate::app::Auth::SignedIn);
+        app.on_key(key(KeyCode::Char('e')));
+        assert_eq!(app.mode, Mode::Prompt);
+        assert_eq!(app.input, "fabric");
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_str(&mut app, "devops");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.profiles[0].name, "fabric", "names stay unique");
+        assert!(
+            app.status
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("another profile")
+        );
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        type_str(&mut app, "prod");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Profiles, "back to the picker");
+        assert_eq!(
+            (app.profile.name.as_str(), app.profiles[0].name.as_str()),
+            ("prod", "prod")
+        );
+        let e = app.take_effects();
+        assert!(matches!(&e[..], [Effect::RenameProfile { profile, name }]
+            if profile == "admin@x" && name == "prod"));
+        // Fetches still go to the same source.
+        app.refresh(true);
+        assert!(
+            matches!(app.take_effects().pop(), Some(Effect::Fetch { profile, .. }) if profile == "admin@x")
+        );
+    }
+
+    #[test]
+    fn sign_in_failures_read_as_expired_or_errors() {
+        use crate::app::Auth;
+        let expired = "az account failed: ERROR: AADSTS70043: The refresh token has expired \
+                       due to sign-in frequency checks by conditional access.";
+        assert_eq!(Auth::from_error(expired), Auth::Expired);
+        assert_eq!(
+            Auth::from_error("az has no login for x: run `fablic login x`"),
+            Auth::Expired
+        );
+        assert_eq!(
+            Auth::from_error("running az (is the Azure CLI installed?)"),
+            Auth::Failed("running az (is the Azure CLI installed?)".into())
+        );
     }
 }

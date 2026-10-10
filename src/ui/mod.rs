@@ -13,7 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, Paragraph};
 
-use crate::app::{App, Level, Mode, Prompt, Purpose};
+use crate::app::{App, Auth, Level, Mode, Prompt, Purpose};
 use crate::theme::Theme;
 
 const STATUS_TTL: Duration = Duration::from_secs(5);
@@ -366,10 +366,10 @@ fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
     } else {
         0
     };
-    // "● " + name + gap + account + tag, inside the border.
-    let fixed = 2 + name_w + 2 + ro;
+    // "● " + name + gap + status + account + tag, inside the border.
+    let fixed = 2 + name_w + 2 + AUTH_W + ro;
     let want = fixed + longest(|p| &p.account);
-    let w = (want as u16 + 2).clamp(40, body.width);
+    let w = (want as u16 + 2).clamp(PROFILE_HINTS.chars().count() as u16 + 4, body.width);
     let account_w = (w as usize).saturating_sub(2 + fixed);
     let h = (app.profiles.len() as u16 + 2).min(body.height);
     let area = Rect::new(
@@ -396,6 +396,7 @@ fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
                     base.fg(p.color.unwrap_or(t.accent))
                         .add_modifier(Modifier::BOLD),
                 ),
+                auth_cell(&p.auth, base, t),
                 Span::styled(
                     format!("{:<account_w$}", table::head(&p.account, account_w)),
                     base.fg(t.text),
@@ -408,7 +409,35 @@ fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
         })
         .collect();
     f.render_widget(Clear, area);
-    f.render_widget(List::new(items).block(overlay_block(" profiles ", t)), area);
+    let block = overlay_block(" profiles ", t).title_bottom(Span::styled(
+        format!(" {PROFILE_HINTS} "),
+        Style::new().fg(t.dim),
+    ));
+    f.render_widget(List::new(items).block(block), area);
+}
+
+const PROFILE_HINTS: &str = "enter switch · e rename · l sign in again · esc close";
+
+/// Width of the sign-in column: the longest label plus a gap.
+const AUTH_W: usize = 19;
+
+/// A profile's sign-in state, padded to `AUTH_W` so the picker never
+/// changes width as checks come back.
+fn auth_cell(auth: &Auth, base: Style, t: &Theme) -> Span<'static> {
+    let (text, color) = match auth {
+        Auth::Unknown => (String::new(), t.dim),
+        Auth::Checking => ("… checking".into(), t.pending),
+        Auth::SignedIn => ("✓ signed in".into(), t.ok),
+        Auth::Expired => ("✗ sign-in expired".into(), t.bad),
+        Auth::Failed(e) => (
+            format!(
+                "✗ {}",
+                table::head(e.lines().next().unwrap_or(""), AUTH_W - 4)
+            ),
+            t.bad,
+        ),
+    };
+    Span::styled(format!("{text:<w$}", w = AUTH_W), base.fg(color))
 }
 
 fn overlay_block<'a>(title: &'a str, t: &Theme) -> Block<'a> {
@@ -577,6 +606,7 @@ mod tests {
             account: account.into(),
             readonly,
             color: None,
+            auth: Default::default(),
         };
         let mut app = App::new(
             vec![
@@ -595,6 +625,9 @@ mod tests {
             KeyCode::Char('p'),
             crossterm::event::KeyModifiers::CONTROL,
         ));
+        settle(&mut app);
+        assert_eq!(app.profiles[0].auth, Auth::SignedIn);
+        app.profiles[2].auth = Auth::Expired;
         insta::assert_snapshot!(render(&mut app));
     }
 

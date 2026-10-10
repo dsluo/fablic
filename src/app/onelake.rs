@@ -63,7 +63,7 @@ impl App {
         }
         self.flash(Level::Info, format!("downloading {}…", row.name));
         self.effects.push(Effect::Download {
-            profile: self.profile.name.clone(),
+            profile: self.profile.account.clone(),
             workspace,
             item,
             path: row.id,

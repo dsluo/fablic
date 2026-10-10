@@ -19,7 +19,13 @@ several identities can be used side by side. Switch with `ctrl-p` or `:ctx <name
 To sign in (or sign in again when your tenant's session limit runs out), run
 `fablic login <profile>`. It runs `az login` for that account's tenant, then makes
 az's previously active account active again, since `az login` always switches to
-the new login and other tools may rely on the active one.
+the new login and other tools may rely on the active one. The profile picker
+(`ctrl-p`) shows which profiles are signed in, and `l` there does the same without
+leaving fablic.
+
+A profile made from an az account can be renamed in the picker (`e`); the name is
+saved under `[names]` in the config (`"<account or client id>" = "name"`), so the
+other az accounts still appear on their own.
 
 With no config file, every account in `az account list --all` becomes a profile.
 To name them, set colours, or mark one read-only, create
@@ -54,7 +60,7 @@ color = "#89b4fa"
 | `n` | new folder or item (lakehouse, notebook, pipeline, ...) in the folder on screen |
 | `m` then `p` | pick up an item or folder, open the destination folder, drop it there |
 | `a` | in roles: give a user, group or app a role (email, object id, or exact group/app name) |
-| `ctrl-p` | switch profile |
+| `ctrl-p` | profiles: see who is signed in; `enter` switch, `e` rename (saved to the config), `l` sign in again |
 | `ctrl-r` / `ctrl-e` / `?` | refresh / compact header / help |
 
 Every write (runs, cancels, renames, deletes, moves, role changes) is blocked on read-only

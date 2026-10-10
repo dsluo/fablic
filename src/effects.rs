@@ -18,6 +18,8 @@ pub struct Ctx {
     pub journal_dir: Option<PathBuf>,
     /// Where `D` saves files; downloads are refused without one.
     pub download_dir: Option<PathBuf>,
+    /// The config file profile renames are saved to; not saved without one.
+    pub config_path: Option<PathBuf>,
 }
 
 /// `dir/name`, or `dir/name (1).ext`, `(2)`... if that exists already.
@@ -127,6 +129,29 @@ pub async fn perform(effect: Effect, sources: &Sources, ctx: &Ctx) -> Option<Msg
             journal::append(ctx.journal_dir.as_deref(), &profile, &action, &result);
             Some(Msg::Acted { action, result })
         }
+        Effect::Check { profile } => {
+            let result = match source(&profile) {
+                Ok(s) => s.warm().await.map_err(err),
+                Err(e) => Err(e),
+            };
+            Some(Msg::Auth { profile, result })
+        }
+        // The event loop signs in itself, since az needs the terminal;
+        // anywhere else (tests, snapshots) there is no terminal to lend.
+        Effect::Login { profile } => Some(Msg::LoggedIn {
+            profile,
+            result: Err("signing in needs the interactive terminal".into()),
+        }),
+        Effect::RenameProfile { profile, name } => Some(match &ctx.config_path {
+            Some(path) => match crate::config::rename(path, &profile, &name) {
+                Ok(()) => Msg::Status(
+                    Level::Info,
+                    format!("renamed to {name} (saved in {})", path.display()),
+                ),
+                Err(e) => Msg::Status(Level::Error, format!("saving the name: {e:#}")),
+            },
+            None => Msg::Status(Level::Info, format!("renamed to {name} (not saved)")),
+        }),
         Effect::Open(url) => {
             if ctx.open_urls
                 && let Err(e) = open::that_detached(&url)
@@ -141,6 +166,28 @@ pub async fn perform(effect: Effect, sources: &Sources, ctx: &Ctx) -> Option<Msg
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn profile_renames_are_saved_only_with_a_config_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let rename = || Effect::RenameProfile {
+            profile: "00000000".into(),
+            name: "etl-sp".into(),
+        };
+        let none = perform(rename(), &Sources::new(), &Ctx::default()).await;
+        assert!(matches!(none, Some(Msg::Status(_, t)) if t.ends_with("(not saved)")));
+        let ctx = Ctx {
+            config_path: Some(path.clone()),
+            ..Ctx::default()
+        };
+        perform(rename(), &Sources::new(), &ctx).await;
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(
+            text.contains("[names]") && text.contains("00000000 = \"etl-sp\""),
+            "{text}"
+        );
+    }
 
     #[test]
     fn unique_dest_never_overwrites() {

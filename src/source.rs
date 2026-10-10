@@ -341,6 +341,9 @@ pub trait DataSource: Send + Sync {
     /// Carry out a write. Returns a short result for the status line.
     fn act(&self, action: Action) -> BoxFuture<'static, Result<String>>;
 
+    /// Drop cached credentials, e.g. after signing in again.
+    fn forget(&self) {}
+
     /// Get a token ahead of time so switching to this profile is instant.
     fn warm(&self) -> BoxFuture<'static, Result<()>> {
         Box::pin(async { Ok(()) })
