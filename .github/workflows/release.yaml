@@ -79,7 +79,7 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build
-        run: mise run build-release -- --target "$TARGET"
+        run: mise run --skip-tools build-release -- --target "$TARGET"
 
       - name: Smoke test
         run: |
