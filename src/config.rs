@@ -12,7 +12,7 @@
 //!
 //! [[profiles]]
 //! name = "partner"
-//! login = "device"                           # fablic's own sign-in: `fablic login partner`
+//! login = "entra"                            # fablic's own sign-in: `fablic login partner`
 //! tenant = "partner.onmicrosoft.com"         # optional; any work account by default
 //! client_id = "…"                            # optional; the Azure CLI's public client by default
 //! ```
@@ -40,14 +40,14 @@ pub struct Profile {
     #[serde(default)]
     pub login: Login,
     /// The account (UPN) this profile signs in as. Required for az; for
-    /// device sign-in it's only a label until the first `fablic login`.
+    /// fablic's own sign-in it's only a label until the first `fablic login`.
     pub account: Option<String>,
     #[serde(default)]
     pub readonly: bool,
     pub color: Option<String>,
-    /// Device sign-in only: the Entra tenant (id or domain).
+    /// fablic sign-in only: the Entra tenant (id or domain).
     pub tenant: Option<String>,
-    /// Device sign-in only: a public client app registration to sign in with.
+    /// fablic sign-in only: a public client app registration to sign in with.
     pub client_id: Option<String>,
 }
 
@@ -64,8 +64,10 @@ pub enum Login {
     /// Tokens from the az CLI's login cache.
     #[default]
     Az,
-    /// fablic's own device-code sign-in, kept in the OS keychain.
-    Device,
+    /// fablic's own sign-in (`fablic login`), kept in the OS keychain.
+    /// `device` is accepted too, its first name.
+    #[serde(alias = "device")]
+    Entra,
 }
 
 impl Profile {
@@ -122,7 +124,7 @@ impl Config {
     }
 
     /// Whether the file says which az accounts to use. If not, every cached
-    /// az account becomes a profile (after any device profiles).
+    /// az account becomes a profile (after any fablic-login profiles).
     pub fn wants_az_accounts(&self) -> bool {
         !self.profiles.iter().any(|p| p.login == Login::Az)
     }
@@ -186,7 +188,7 @@ pub fn xdg(var: &str, fallback: &str) -> Option<PathBuf> {
     Some(base.join("fablic"))
 }
 
-/// A device sign-in made with `fablic login` for a profile the config file
+/// A sign-in made with `fablic login` for a profile the config file
 /// doesn't define. The refresh token itself is in the keychain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedLogin {
@@ -201,7 +203,7 @@ impl SavedLogin {
     pub fn profile(&self) -> Profile {
         Profile {
             name: self.name.clone(),
-            login: Login::Device,
+            login: Login::Entra,
             account: None,
             readonly: false,
             color: None,
@@ -272,19 +274,19 @@ mod tests {
     }
 
     #[test]
-    fn device_profiles_need_no_account() {
+    fn entra_profiles_need_no_account() {
         let c: Config = toml::from_str(
             r#"
             [[profiles]]
             name = "partner"
-            login = "device"
+            login = "entra"
             tenant = "partner.onmicrosoft.com"
             [[profiles]]
             name = "broken"
             "#,
         )
         .unwrap();
-        assert_eq!(c.profiles[0].login, Login::Device);
+        assert_eq!(c.profiles[0].login, Login::Entra);
         assert_eq!(
             c.profiles[0].tenant.as_deref(),
             Some("partner.onmicrosoft.com")
@@ -292,7 +294,7 @@ mod tests {
         assert_eq!(c.profiles[1].login, Login::Az);
         assert!(c.profiles[1].az_account().is_err());
 
-        // Device profiles alone don't hide the az accounts.
+        // fablic-login profiles alone don't hide the az accounts.
         let mut only_device = c.clone();
         only_device.profiles.truncate(1);
         let merged = only_device.with_az_accounts(vec!["me@b.org".into()]);

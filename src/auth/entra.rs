@@ -1,12 +1,16 @@
-//! fablic's own sign-in: the OAuth device-code flow against Microsoft Entra,
-//! for identities that aren't (or shouldn't be) in the az CLI.
+//! fablic's own sign-in with Microsoft Entra, for identities that aren't (or
+//! shouldn't be) in the az CLI.
 //!
-//! `fablic login <profile>` shows a code to enter at microsoft.com/devicelogin
-//! and keeps the resulting refresh token in the OS keychain. After that, the
-//! refresh token is traded for Fabric, OneLake or Graph tokens as needed, and
-//! each new refresh token Entra hands back replaces the stored one.
+//! `fablic login` signs in through the browser the way `az login` does: an
+//! authorization code with PKCE, redirected to a one-shot listener on
+//! localhost. `fablic login --device-code` shows a code to enter at
+//! microsoft.com/devicelogin instead, for machines without a browser (some
+//! tenants' Conditional Access blocks that flow). Either way the refresh
+//! token goes in the OS keychain, is traded for Fabric, OneLake or Graph
+//! tokens as needed, and each new one Entra hands back replaces it.
 
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,6 +19,8 @@ use base64::Engine;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 use super::{FABRIC, TokenProvider};
@@ -27,6 +33,9 @@ pub const DEFAULT_CLIENT_ID: &str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
 /// Any work or school account, when a profile names no tenant.
 pub const DEFAULT_TENANT: &str = "organizations";
 pub const AUTHORITY: &str = "https://login.microsoftonline.com";
+
+/// How long the browser sign-in may take.
+const BROWSER_WAIT: Duration = Duration::from_secs(5 * 60);
 
 /// Refresh this long before a token actually expires.
 const MARGIN: Duration = Duration::from_secs(5 * 60);
@@ -146,13 +155,55 @@ fn account_of(id_token: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// `n` random bytes, base64url: PKCE verifiers and `state` values.
+fn random_b64(n: usize) -> Result<String> {
+    let mut buf = vec![0u8; n];
+    aws_lc_rs::rand::fill(&mut buf).map_err(|_| anyhow!("no system randomness"))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(buf))
+}
+
+/// The PKCE S256 challenge for a verifier.
+fn challenge(verifier: &str) -> String {
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, verifier.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest.as_ref())
+}
+
+/// A browser sign-in in progress: open `url`, then `finish_browser`.
+pub struct BrowserLogin {
+    pub url: String,
+    listeners: Vec<TcpListener>,
+    redirect: String,
+    verifier: String,
+    state: String,
+}
+
+/// The query of the request line `GET /?code=…&state=… HTTP/1.1`.
+fn query_of(request: &str) -> HashMap<String, String> {
+    let target = request.split_whitespace().nth(1).unwrap_or("");
+    let query = target.split_once('?').map_or("", |(_, q)| q);
+    query
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| {
+            let v = urlencoding::decode(&v.replace('+', " "))
+                .map(|d| d.into_owned())
+                .unwrap_or_default();
+            (k.to_owned(), v)
+        })
+        .collect()
+}
+
+const DONE_PAGE: &str = "<!doctype html><meta charset=utf-8><title>fablic</title>\
+<body style=\"font:16px system-ui;margin:4em\"><h2>fablic is signed in</h2>\
+<p>You can close this tab and go back to the terminal.</p>";
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
-pub struct DeviceLogin {
+pub struct EntraLogin {
     profile: String,
     settings: Settings,
     store: Arc<dyn SecretStore>,
@@ -169,7 +220,7 @@ struct State {
     tokens: HashMap<&'static str, (String, u64)>,
 }
 
-impl DeviceLogin {
+impl EntraLogin {
     /// A provider for `profile`, picking up a refresh token from an earlier
     /// `fablic login`. `account` is shown until the first login names one.
     pub fn new(
@@ -177,7 +228,7 @@ impl DeviceLogin {
         account: Option<&str>,
         settings: Settings,
         store: Arc<dyn SecretStore>,
-    ) -> DeviceLogin {
+    ) -> EntraLogin {
         let saved = store
             .get(profile)
             .ok()
@@ -188,7 +239,7 @@ impl DeviceLogin {
             .map(|s| s.account.clone())
             .or_else(|| account.map(str::to_owned))
             .unwrap_or_else(|| "(not signed in)".into());
-        DeviceLogin {
+        EntraLogin {
             profile: profile.to_owned(),
             settings,
             store,
@@ -216,8 +267,107 @@ impl DeviceLogin {
         Ok(resp.json().await?)
     }
 
-    /// Start a device-code sign-in. Show the result, then `finish` it.
-    pub async fn start(&self) -> Result<DeviceCode> {
+    /// Start a browser sign-in: listen on a free localhost port and build the
+    /// authorize URL that redirects back to it. `hint` pre-fills the account.
+    pub async fn start_browser(&self, hint: Option<&str>) -> Result<BrowserLogin> {
+        let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .context("listening on localhost for the sign-in redirect")?;
+        let port = v4.local_addr()?.port();
+        let mut listeners = vec![v4];
+        // Browsers may resolve `localhost` to ::1; answer there too if we can.
+        if let Ok(v6) = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
+            listeners.push(v6);
+        }
+        let redirect = format!("http://localhost:{port}");
+        let verifier = random_b64(32)?;
+        let state = random_b64(16)?;
+        let scope = scopes(FABRIC);
+        let mut params = vec![
+            ("client_id", self.settings.client_id.as_str()),
+            ("response_type", "code"),
+            ("redirect_uri", &redirect),
+            ("response_mode", "query"),
+            ("scope", &scope),
+            ("state", &state),
+            ("code_challenge_method", "S256"),
+            ("prompt", "select_account"),
+        ];
+        let challenge = challenge(&verifier);
+        params.push(("code_challenge", &challenge));
+        if let Some(h) = hint {
+            params.push(("login_hint", h));
+        }
+        let query: Vec<String> = params
+            .iter()
+            .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
+            .collect();
+        let url = format!(
+            "{}?{}",
+            self.settings.endpoint("authorize"),
+            query.join("&")
+        );
+        Ok(BrowserLogin {
+            url,
+            listeners,
+            redirect,
+            verifier,
+            state,
+        })
+    }
+
+    /// Wait for the browser to come back with a code, trade it for tokens and
+    /// keep the refresh token. Returns the account signed in as.
+    pub async fn finish_browser(&self, b: BrowserLogin) -> Result<String> {
+        let code = tokio::time::timeout(BROWSER_WAIT, wait_for_code(&b.listeners, &b.state))
+            .await
+            .map_err(|_| anyhow!("no sign-in after 5 minutes; run login again"))??;
+        let scope = scopes(FABRIC);
+        let v = self
+            .post(
+                "token",
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("client_id", &self.settings.client_id),
+                    ("code", &code),
+                    ("redirect_uri", &b.redirect),
+                    ("code_verifier", &b.verifier),
+                    ("scope", &scope),
+                ],
+            )
+            .await?;
+        if let Some(err) = v.get("error").and_then(Value::as_str) {
+            let desc = v
+                .get("error_description")
+                .and_then(Value::as_str)
+                .unwrap_or(err);
+            bail!("{}", desc.lines().next().unwrap_or(desc));
+        }
+        self.keep(serde_json::from_value(v)?).await
+    }
+
+    /// Keep a fresh sign-in: the refresh token (keychain) and the Fabric
+    /// token that came with it.
+    async fn keep(&self, t: TokenResponse) -> Result<String> {
+        let account = t
+            .id_token
+            .as_deref()
+            .and_then(account_of)
+            .unwrap_or_else(|| self.profile.clone());
+        let refresh = t
+            .refresh_token
+            .ok_or_else(|| anyhow!("Entra returned no refresh token"))?;
+        self.save(&account, &refresh)?;
+        let mut state = self.state.lock().await;
+        state.refresh = Some(refresh);
+        state
+            .tokens
+            .insert(FABRIC, (t.access_token, now() + t.expires_in));
+        Ok(account)
+    }
+
+    /// Start a device-code sign-in. Show the result, then `finish_device_code`.
+    pub async fn start_device_code(&self) -> Result<DeviceCode> {
         let scope = scopes(FABRIC);
         let v = self
             .post(
@@ -233,7 +383,7 @@ impl DeviceLogin {
 
     /// Wait for the user to finish signing in, then keep the refresh token.
     /// Returns the account signed in as.
-    pub async fn finish(&self, code: &DeviceCode) -> Result<String> {
+    pub async fn finish_device_code(&self, code: &DeviceCode) -> Result<String> {
         let deadline = now() + code.expires_in;
         let mut interval = code.interval;
         loop {
@@ -249,24 +399,7 @@ impl DeviceLogin {
                 )
                 .await?;
             match v.get("error").and_then(Value::as_str) {
-                None => {
-                    let t: TokenResponse = serde_json::from_value(v)?;
-                    let account = t
-                        .id_token
-                        .as_deref()
-                        .and_then(account_of)
-                        .unwrap_or_else(|| self.profile.clone());
-                    let refresh = t
-                        .refresh_token
-                        .ok_or_else(|| anyhow!("Entra returned no refresh token"))?;
-                    self.save(&account, &refresh)?;
-                    let mut state = self.state.lock().await;
-                    state.refresh = Some(refresh);
-                    state
-                        .tokens
-                        .insert(FABRIC, (t.access_token, now() + t.expires_in));
-                    return Ok(account);
-                }
+                None => return self.keep(serde_json::from_value(v)?).await,
                 Some("authorization_pending") if now() < deadline => {}
                 Some("slow_down") => interval += 5,
                 Some("authorization_pending" | "expired_token") => {
@@ -346,7 +479,58 @@ impl DeviceLogin {
     }
 }
 
-impl TokenProvider for DeviceLogin {
+/// Answer requests on the redirect listeners until one carries our `state`
+/// with a code (or an error from Entra). Stray requests (favicons, browser
+/// pre-connects) get a 404 and are ignored.
+async fn wait_for_code(listeners: &[TcpListener], state: &str) -> Result<String> {
+    loop {
+        let accepts = listeners.iter().map(|l| Box::pin(l.accept()));
+        let (Ok((mut conn, _)), _, _) = futures::future::select_all(accepts).await else {
+            continue;
+        };
+        let mut buf = vec![0u8; 16 * 1024];
+        let n = match tokio::time::timeout(Duration::from_secs(10), conn.read(&mut buf)).await {
+            Ok(Ok(n)) => n,
+            _ => continue,
+        };
+        let request = String::from_utf8_lossy(&buf[..n]);
+        let q = query_of(request.lines().next().unwrap_or(""));
+        if q.get("state").map(String::as_str) != Some(state) {
+            let _ = conn
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            continue;
+        }
+        let page = match q.get("error") {
+            None => DONE_PAGE.to_owned(),
+            Some(_) => {
+                "<!doctype html><title>fablic</title><p>Sign-in failed; see the terminal.".into()
+            }
+        };
+        let _ = conn
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                    page.len()
+                )
+                .as_bytes(),
+            )
+            .await;
+        if let Some(err) = q.get("error") {
+            let desc = q.get("error_description").unwrap_or(err);
+            bail!("sign-in failed: {}", desc.lines().next().unwrap_or(desc));
+        }
+        return q
+            .get("code")
+            .cloned()
+            .ok_or_else(|| anyhow!("the sign-in redirect had no code"));
+    }
+}
+
+impl TokenProvider for EntraLogin {
     fn token(&self, resource: &'static str) -> BoxFuture<'_, Result<String>> {
         Box::pin(async move {
             // One refresh at a time, so a rotated refresh token isn't raced.
@@ -442,11 +626,11 @@ mod tests {
             .mount(&server)
             .await;
         let store = Arc::new(Memory::default());
-        let login = DeviceLogin::new("dev", None, settings(&server), store.clone());
+        let login = EntraLogin::new("dev", None, settings(&server), store.clone());
         assert_eq!(login.account(), "(not signed in)");
-        let code = login.start().await.unwrap();
+        let code = login.start_device_code().await.unwrap();
         assert_eq!(code.user_code, "ABCD-1234");
-        let account = login.finish(&code).await.unwrap();
+        let account = login.finish_device_code(&code).await.unwrap();
         assert_eq!(account, "jane@contoso.com");
         assert_eq!(
             saved(&store, "dev"),
@@ -478,7 +662,7 @@ mod tests {
                 &json!({"account": "jane@contoso.com", "refresh_token": "rt-1"}).to_string(),
             )
             .unwrap();
-        let login = DeviceLogin::new("dev", None, settings(&server), store.clone());
+        let login = EntraLogin::new("dev", None, settings(&server), store.clone());
         assert_eq!(login.account(), "jane@contoso.com");
         assert_eq!(login.token(STORAGE).await.unwrap(), "storage-1");
         // Cached: no second request (expect(1) above).
@@ -497,7 +681,7 @@ mod tests {
             .mount(&server)
             .await;
         let store = Arc::new(Memory::default());
-        let fresh = DeviceLogin::new("dev", None, settings(&server), store.clone());
+        let fresh = EntraLogin::new("dev", None, settings(&server), store.clone());
         let e = fresh.token(FABRIC).await.unwrap_err().to_string();
         assert_eq!(e, "profile dev isn't signed in: run `fablic login dev`");
 
@@ -507,13 +691,79 @@ mod tests {
                 &json!({"account": "a", "refresh_token": "old"}).to_string(),
             )
             .unwrap();
-        let stale = DeviceLogin::new("dev", None, settings(&server), store);
+        let stale = EntraLogin::new("dev", None, settings(&server), store);
         let e = stale.token(FABRIC).await.unwrap_err().to_string();
         assert_eq!(
             e,
             "the sign-in for dev has expired or was revoked \
              (AADSTS70043: The refresh token has expired.): run `fablic login dev`"
         );
+    }
+
+    #[tokio::test]
+    async fn browser_login_trades_the_redirected_code_with_pkce() {
+        let server = MockServer::start().await;
+        let store = Arc::new(Memory::default());
+        let login = EntraLogin::new("dev", None, settings(&server), store.clone());
+        let b = login.start_browser(Some("jane@contoso.com")).await.unwrap();
+        let url = reqwest::Url::parse(&b.url).unwrap();
+        assert_eq!(url.path(), "/contoso/oauth2/v2.0/authorize");
+        let q: HashMap<String, String> = url.query_pairs().into_owned().collect();
+        assert_eq!(q["login_hint"], "jane@contoso.com");
+        assert_eq!(q["code_challenge"], challenge(&b.verifier));
+        let (redirect, state) = (q["redirect_uri"].clone(), q["state"].clone());
+        assert!(redirect.starts_with("http://localhost:"));
+
+        Mock::given(path("/contoso/oauth2/v2.0/token"))
+            .and(body_string_contains("grant_type=authorization_code"))
+            .and(body_string_contains("code=the-code"))
+            .and(body_string_contains(format!(
+                "code_verifier={}",
+                b.verifier
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "fabric-1", "expires_in": 3600,
+                "refresh_token": "rt-1", "id_token": id_token("jane@contoso.com")
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // The "browser": a stray request, a forged state, then the real redirect.
+        let browser = tokio::spawn(async move {
+            let http = reqwest::Client::new();
+            let local = redirect.replace("localhost", "127.0.0.1");
+            let stray = http
+                .get(format!("{local}/favicon.ico"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(stray.status(), 404);
+            let forged = http
+                .get(format!("{local}/?code=evil&state=nope"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(forged.status(), 404);
+            let page = http
+                .get(format!("{local}/?code=the-code&state={state}"))
+                .send()
+                .await
+                .unwrap();
+            page.text().await.unwrap()
+        });
+        let account = login.finish_browser(b).await.unwrap();
+        assert_eq!(account, "jane@contoso.com");
+        assert!(browser.await.unwrap().contains("fablic is signed in"));
+        assert_eq!(saved(&store, "dev").refresh_token, "rt-1");
+        assert_eq!(login.token(FABRIC).await.unwrap(), "fabric-1");
+    }
+
+    #[test]
+    fn parses_the_redirect_query() {
+        let q = query_of("GET /?code=a%2Fb&state=s&error_description=no+way HTTP/1.1");
+        assert_eq!(q["code"], "a/b");
+        assert_eq!(q["error_description"], "no way");
+        assert!(query_of("GET /favicon.ico HTTP/1.1").is_empty());
     }
 
     #[test]

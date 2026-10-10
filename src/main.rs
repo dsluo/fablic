@@ -25,7 +25,7 @@ use ratatui::{DefaultTerminal, Terminal};
 use tokio::sync::mpsc;
 
 use app::{App, ProfileInfo};
-use auth::{AzCli, DeviceLogin, Keychain, TokenProvider, device};
+use auth::{AzCli, EntraLogin, Keychain, TokenProvider, entra};
 use config::{Config, Login, Profile, SavedLogin};
 use effects::Ctx;
 use fabric::FabricSource;
@@ -61,11 +61,11 @@ struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 enum Cmd {
-    /// Sign a `login = "device"` profile in: shows a code to enter at
-    /// microsoft.com/devicelogin and keeps the sign-in in the OS keychain.
+    /// Sign in with fablic's own login (no az needed): opens your browser to
+    /// Microsoft's sign-in page and keeps the sign-in in the OS keychain.
     Login {
         /// Profile name (or account). Needs no config: a new name becomes a
-        /// device profile.
+        /// fablic-login profile.
         #[arg(default_value = config::DEFAULT_PROFILE)]
         profile: String,
         /// Entra tenant (id or domain). Defaults to any work account.
@@ -74,8 +74,12 @@ enum Cmd {
         /// Public client app registration to sign in with.
         #[arg(long)]
         client_id: Option<String>,
+        /// Show a code to enter at microsoft.com/devicelogin instead of
+        /// opening a browser (for SSH sessions; some tenants block it).
+        #[arg(long)]
+        device_code: bool,
     },
-    /// Forget a device profile's stored sign-in.
+    /// Forget a fablic-login profile's stored sign-in.
     Logout {
         /// Profile name (or account).
         #[arg(default_value = config::DEFAULT_PROFILE)]
@@ -94,7 +98,8 @@ async fn main() -> Result<()> {
             profile,
             tenant,
             client_id,
-        }) => return login(profile, tenant.clone(), client_id.clone()).await,
+            device_code,
+        }) => return login(profile, tenant.clone(), client_id.clone(), *device_code).await,
         Some(Cmd::Logout { profile }) => return logout(profile),
         None => {}
     }
@@ -171,29 +176,29 @@ async fn live_profiles(
 fn token_provider(p: &Profile) -> Result<Arc<dyn TokenProvider>> {
     Ok(match p.login {
         Login::Az => Arc::new(AzCli::new(p.az_account()?)),
-        Login::Device => Arc::new(device_login(p)),
+        Login::Entra => Arc::new(entra_login(p)),
     })
 }
 
-fn device_login(p: &Profile) -> DeviceLogin {
-    let settings = device::Settings {
+fn entra_login(p: &Profile) -> EntraLogin {
+    let settings = entra::Settings {
         tenant: p
             .tenant
             .clone()
-            .unwrap_or_else(|| device::DEFAULT_TENANT.into()),
+            .unwrap_or_else(|| entra::DEFAULT_TENANT.into()),
         client_id: p
             .client_id
             .clone()
-            .unwrap_or_else(|| device::DEFAULT_CLIENT_ID.into()),
-        authority: device::AUTHORITY.into(),
+            .unwrap_or_else(|| entra::DEFAULT_CLIENT_ID.into()),
+        authority: entra::AUTHORITY.into(),
     };
-    DeviceLogin::new(&p.name, p.account.as_deref(), settings, Arc::new(Keychain))
+    EntraLogin::new(&p.name, p.account.as_deref(), settings, Arc::new(Keychain))
 }
 
 /// The profile `login`/`logout` act on: one from the config file or an
-/// earlier `fablic login`, or else a new device profile of that name.
+/// earlier `fablic login`, or else a new fablic-login profile of that name.
 /// Returns it and whether the config file defines it.
-fn device_profile(wanted: &str) -> Result<(Profile, bool)> {
+fn login_profile(wanted: &str) -> Result<(Profile, bool)> {
     let file = Config::load(Config::path().as_deref())?;
     let logins = config::load_logins(config::logins_path().as_deref());
     let in_file = file
@@ -215,28 +220,45 @@ fn device_profile(wanted: &str) -> Result<(Profile, bool)> {
                 .profile()
             }),
     };
-    if p.login != Login::Device {
+    if p.login != Login::Entra {
         anyhow::bail!(
-            "profile {} signs in through az; use `az login` for it (or set login = \"device\")",
+            "profile {} signs in through az; use `az login` for it (or set login = \"entra\")",
             p.name
         );
     }
     Ok((p, in_file.is_some()))
 }
 
-async fn login(wanted: &str, tenant: Option<String>, client_id: Option<String>) -> Result<()> {
-    let (mut p, in_file) = device_profile(wanted)?;
+async fn login(
+    wanted: &str,
+    tenant: Option<String>,
+    client_id: Option<String>,
+    device_code: bool,
+) -> Result<()> {
+    let (mut p, in_file) = login_profile(wanted)?;
     p.tenant = tenant.or(p.tenant);
     p.client_id = client_id.or(p.client_id);
-    let login = device_login(&p);
-    let code = login.start().await?;
-    println!("{}", code.message);
-    println!("\n    code: {}\n", code.user_code);
-    if open::that_detached(&code.verification_uri).is_ok() {
-        println!("(opened {} in your browser)", code.verification_uri);
-    }
-    println!("waiting for you to finish signing in…");
-    let account = login.finish(&code).await?;
+    let login = entra_login(&p);
+    let account = if device_code {
+        let code = login.start_device_code().await?;
+        println!("{}", code.message);
+        println!("\n    code: {}\n", code.user_code);
+        if open::that_detached(&code.verification_uri).is_ok() {
+            println!("(opened {} in your browser)", code.verification_uri);
+        }
+        println!("waiting for you to finish signing in…");
+        login.finish_device_code(&code).await?
+    } else {
+        let b = login.start_browser(p.account.as_deref()).await?;
+        if open::that_detached(&b.url).is_ok() {
+            println!("Sign in in the browser window that just opened.");
+            println!("If none did, open this link:\n\n{}\n", b.url);
+        } else {
+            println!("Open this link to sign in:\n\n{}\n", b.url);
+        }
+        println!("waiting for you to finish signing in…");
+        login.finish_browser(b).await?
+    };
     if !in_file {
         // Remember the profile so the TUI offers it without any config.
         let path = config::logins_path();
@@ -254,8 +276,8 @@ async fn login(wanted: &str, tenant: Option<String>, client_id: Option<String>) 
 }
 
 fn logout(wanted: &str) -> Result<()> {
-    let (p, _) = device_profile(wanted)?;
-    device_login(&p).logout()?;
+    let (p, _) = login_profile(wanted)?;
+    entra_login(&p).logout()?;
     let path = config::logins_path();
     let mut logins = config::load_logins(path.as_deref());
     if logins.iter().any(|l| l.name == p.name) {
