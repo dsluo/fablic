@@ -256,7 +256,12 @@ async fn login(profile: Option<&str>, tenant: Option<&str>) -> Result<()> {
             }
         }
     };
-    auth::login(std::path::Path::new("az"), account.as_deref(), tenant).await?;
+    auth::login(
+        std::path::Path::new(auth::AZ_BINARY),
+        account.as_deref(),
+        tenant,
+    )
+    .await?;
     let names: Vec<String> = AzCli::accounts()
         .await
         .unwrap_or_default()
@@ -317,7 +322,8 @@ async fn run(
                 drop(events.take());
                 suspend()?;
                 println!("Signing {profile} in again with az…");
-                let result = auth::login(std::path::Path::new("az"), Some(&profile), None).await;
+                let result =
+                    auth::login(std::path::Path::new(auth::AZ_BINARY), Some(&profile), None).await;
                 // Reuse the terminal, and repaint with a blank frame rather
                 // than `terminal.clear()`: both a new terminal and `clear`
                 // ask the terminal for the cursor position, and that answer

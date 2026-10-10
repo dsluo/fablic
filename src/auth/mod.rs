@@ -7,6 +7,8 @@ use futures::future::BoxFuture;
 
 pub use az::{AzAccount, AzCli, EnvLogin, login, service_principal_hint};
 
+pub const AZ_BINARY: &str = if cfg!(windows) { "az.cmd" } else { "az" };
+
 pub const FABRIC: &str = "https://api.fabric.microsoft.com";
 /// OneLake (DFS and table APIs) takes storage-audience tokens.
 pub const STORAGE: &str = "https://storage.azure.com";

@@ -1,0 +1,92 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: Release tag to build and package; empty for CI builds
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ inputs.release-tag }}
+      TARGET: ${{ matrix.target }}
+      EXE_SUFFIX: ${{ startsWith(matrix.os, 'windows-') && '.exe' || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release-tag || github.sha }}
+          persist-credentials: false
+
+      - name: Install tools
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+        with:
+          install_args: rust
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: mise run --skip-tools build-release -- --target "$TARGET"
+
+      - name: Smoke test
+        run: |
+          "target/${TARGET}/release/fablic${EXE_SUFFIX}" --fake --snapshot 'j enter F'
+
+      - name: Package
+        if: inputs.release-tag != '' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          archive="fablic-${RELEASE_TAG}-${TARGET}"
+          mkdir -p "dist/${archive}"
+          cp "target/${TARGET}/release/fablic" README.md CHANGELOG.md "dist/${archive}/"
+          tar -czf "dist/${archive}.tar.gz" -C dist "${archive}"
+
+      - name: Package Windows
+        if: inputs.release-tag != '' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = "fablic-$env:RELEASE_TAG-$env:TARGET"
+          New-Item -ItemType Directory -Path "dist/$archive" -Force | Out-Null
+          Copy-Item -LiteralPath "target/$env:TARGET/release/fablic.exe", "README.md", "CHANGELOG.md" -Destination "dist/$archive"
+          Compress-Archive -LiteralPath "dist/$archive" -DestinationPath "dist/$archive.zip"
+
+      - name: Upload build artifact
+        if: inputs.release-tag != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error

@@ -16,7 +16,7 @@ use serde::Deserialize;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
-use super::TokenProvider;
+use super::{AZ_BINARY, TokenProvider};
 
 /// Refresh this long before a token actually expires.
 const MARGIN: Duration = Duration::from_secs(5 * 60);
@@ -132,7 +132,7 @@ struct Token {
 
 impl AzCli {
     pub fn new(account: impl Into<String>) -> AzCli {
-        AzCli::with_binary(account, "az")
+        AzCli::with_binary(account, AZ_BINARY)
     }
 
     pub fn with_binary(account: impl Into<String>, az: impl Into<PathBuf>) -> AzCli {
@@ -197,7 +197,7 @@ impl AzCli {
 
     /// Every identity az has cached, deduplicated, in az's order.
     pub async fn accounts() -> Result<Vec<AzAccount>> {
-        let list = list_accounts(&PathBuf::from("az")).await?;
+        let list = list_accounts(Path::new(AZ_BINARY)).await?;
         let mut out: Vec<AzAccount> = Vec::new();
         for a in list {
             if !out.iter().any(|o| o.name == a.user.name) {
@@ -481,9 +481,11 @@ async fn run_az_in(az: &Path, config_dir: Option<&Path>, args: &[&str]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     /// A fake `az` that logs its arguments and answers `account list` / `get-access-token`.
+    #[cfg(unix)]
     fn stub_az(dir: &std::path::Path, accounts: &str) -> PathBuf {
         let path = dir.join("az");
         let log = dir.join("calls.log");
@@ -502,6 +504,25 @@ esac
         path
     }
 
+    #[cfg(windows)]
+    fn stub_az(dir: &std::path::Path, accounts: &str) -> PathBuf {
+        let path = dir.join("az.cmd");
+        let log = dir.join("calls.log");
+        let accounts_path = dir.join("accounts.json");
+        std::fs::write(&accounts_path, accounts).unwrap();
+        let script = format!(
+            r#"@echo off
+echo %*>>"{log}"
+if "%~1 %~2"=="account list" type "{accounts}"
+if "%~1 %~2"=="account get-access-token" echo {{"accessToken":"tok-%~4","expires_on":4102444800}}
+"#,
+            log = log.display(),
+            accounts = accounts_path.display(),
+        );
+        std::fs::write(&path, script).unwrap();
+        path
+    }
+
     const ACCOUNTS: &str = r#"[
       {"id":"sub-a","user":{"name":"admin@fabric.example"}},
       {"id":"tenant-1","user":{"name":"me@devops.example"}}
@@ -517,6 +538,8 @@ esac
         );
         az.token(super::super::FABRIC).await.unwrap();
         let log = std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
+        #[cfg(windows)]
+        let log = log.replace('"', "");
         let calls: Vec<&str> = log.lines().collect();
         assert_eq!(
             calls.len(),
@@ -532,6 +555,7 @@ esac
 
     /// A fake `az` for `login`: logs calls, and `account show` reports
     /// whatever `account set` last chose (starting on sub-a).
+    #[cfg(unix)]
     fn stub_login(dir: &std::path::Path) -> PathBuf {
         let path = dir.join("az");
         let log = dir.join("calls.log");
@@ -555,6 +579,7 @@ esac
         path
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn login_uses_the_known_tenant_and_restores_the_active_account() {
         let dir = tempfile::tempdir().unwrap();
@@ -604,6 +629,7 @@ esac
 
     /// A fake az that keeps its accounts in `$AZURE_CONFIG_DIR/accounts`:
     /// `login --service-principal` adds one there.
+    #[cfg(unix)]
     fn stub_env_az(dir: &std::path::Path) -> PathBuf {
         let path = dir.join("az");
         let log = dir.join("calls.log");
@@ -624,6 +650,7 @@ esac
         path
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn env_profiles_sign_in_to_their_own_config_dir() {
         let dir = tempfile::tempdir().unwrap();
