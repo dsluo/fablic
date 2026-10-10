@@ -62,6 +62,7 @@ pub struct AzAccount {
 }
 
 /// How to sign a service principal in: fablic can't, it has no secret.
+/// One option per line, so it fits a terminal and pastes as one command.
 pub fn service_principal_hint(client_id: &str, tenant: &str) -> String {
     let tenant = if tenant.is_empty() {
         "<tenant>"
@@ -69,9 +70,13 @@ pub fn service_principal_hint(client_id: &str, tenant: &str) -> String {
         tenant
     };
     format!(
-        "{client_id} is a service principal; sign it in with \
-         `az login --service-principal --username {client_id} --tenant {tenant} \
-         --password <secret or certificate path>`"
+        "{client_id} is a service principal; fablic doesn't have its secret.\n\
+         Sign it in with:\n\n\
+         az login --service-principal \\\n\
+         \x20 --username {client_id} \\\n\
+         \x20 --tenant {tenant} \\\n\
+         \x20 --password <client secret>\n\n\
+         (For a certificate, use --certificate <path to .pem> instead of --password.)"
     )
 }
 

@@ -62,7 +62,13 @@ impl App {
         let p = &self.profiles[self.picker];
         if p.service_principal {
             let hint = crate::auth::service_principal_hint(&p.account, &p.tenant);
-            return self.flash(Level::Warn, hint);
+            self.detail = super::Detail {
+                title: format!("sign in {}", p.name),
+                lines: hint.lines().map(str::to_owned).collect(),
+                scroll: 0,
+            };
+            self.mode = Mode::Detail;
+            return;
         }
         let account = p.account.clone();
         self.set_auth(&account, Auth::Checking);
@@ -281,10 +287,14 @@ mod tests {
                 .iter()
                 .all(|e| !matches!(e, Effect::Login { .. }))
         );
-        let status = &app.status.as_ref().unwrap().text;
+        assert_eq!(app.mode, Mode::Detail);
+        let text = app.detail.lines.join("\n");
         assert!(
-            status.contains("az login --service-principal --username 00000000-1111 --tenant t-1"),
-            "{status}"
+            text.contains(
+                "az login --service-principal \\\n  --username 00000000-1111 \\\n  --tenant t-1"
+            ),
+            "{text}"
         );
+        assert!(app.detail.lines.iter().all(|l| l.chars().count() < 80));
     }
 }
