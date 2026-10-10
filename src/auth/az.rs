@@ -233,7 +233,8 @@ pub async fn login(az: &Path, account: Option<&str>, tenant: Option<&str>) -> Re
         Some(_) => None,
         None => known.map(|a| a.tenant_id).filter(|t| !t.is_empty()),
     };
-    let mut args = vec!["login", "--allow-no-subscriptions"];
+    // `--output none`: the subscription list az prints after signing in is noise here.
+    let mut args = vec!["login", "--allow-no-subscriptions", "--output", "none"];
     if let Some(t) = tenant.or(known_tenant.as_deref()) {
         args.extend(["--tenant", t]);
     }
@@ -427,7 +428,7 @@ esac
         let log = std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
         let calls: Vec<&str> = log.lines().collect();
         assert!(
-            calls.contains(&"login --allow-no-subscriptions --tenant t-1"),
+            calls.contains(&"login --allow-no-subscriptions --output none --tenant t-1"),
             "{calls:?}"
         );
         assert!(

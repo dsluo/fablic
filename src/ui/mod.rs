@@ -229,7 +229,9 @@ fn draw_confirm(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
         return;
     };
     let question = format!("{}?", action.describe());
-    let w = (question.chars().count() as u16 + 6).clamp(40, body.width);
+    let w = (question.chars().count() as u16 + 6)
+        .max(40)
+        .min(body.width);
     let area = Rect::new(
         body.x + (body.width - w) / 2,
         body.y + body.height.saturating_sub(5) / 2,
@@ -274,7 +276,7 @@ fn draw_input(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
     .into_iter()
     .max()
     .unwrap_or(0) as u16;
-    let w = (widest + 4).clamp(50, body.width);
+    let w = (widest + 4).max(50).min(body.width);
     // Four fixed lines plus the list, inside a border.
     let rows = |n: usize| 6 + n.max(usize::from(choices.is_some())) as u16;
     let tallest = rows(all.len()).min(body.height);
@@ -370,7 +372,9 @@ fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
     // "● " + name + gap + status + account + tag, inside the border.
     let fixed = 2 + name_w + 2 + AUTH_W + ro;
     let want = fixed + longest(|p| &p.account);
-    let w = (want as u16 + 2).clamp(PROFILE_HINTS.chars().count() as u16 + 4, body.width);
+    let w = (want as u16 + 2)
+        .max(PROFILE_HINTS.chars().count() as u16 + 4)
+        .min(body.width);
     let account_w = (w as usize).saturating_sub(2 + fixed);
     let h = (app.profiles.len() as u16 + 2).min(body.height);
     let area = Rect::new(
@@ -644,6 +648,37 @@ mod tests {
         assert_eq!(app.profiles[0].auth, Auth::SignedIn);
         app.profiles[2].auth = Auth::Expired;
         insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn tiny_terminals_do_not_panic() {
+        let mut app = fake_app();
+        for steps in [":", "?"] {
+            type_str(&mut app, steps);
+            let mut term = Terminal::new(TestBackend::new(30, 8)).unwrap();
+            term.draw(|f| draw(f, &mut app, &Theme::MOCHA)).unwrap();
+            app.on_key(key(KeyCode::Esc));
+        }
+        // Profile picker, a confirm and a prompt, at a size no one uses.
+        app.on_key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        for (w, h) in [(30, 8), (0, 0), (1, 1)] {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, &mut app, &Theme::MOCHA)).unwrap();
+        }
+        app.on_key(key(KeyCode::Esc));
+        steps(
+            &mut app,
+            &[KeyCode::Char('j'), KeyCode::Enter, KeyCode::Char('G')],
+        );
+        app.on_key(key(KeyCode::Char('r')));
+        let mut term = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        term.draw(|f| draw(f, &mut app, &Theme::MOCHA)).unwrap();
+        app.on_key(key(KeyCode::Char('n')));
+        app.on_key(key(KeyCode::Char('e')));
+        term.draw(|f| draw(f, &mut app, &Theme::MOCHA)).unwrap();
     }
 
     #[test]

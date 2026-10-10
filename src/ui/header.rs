@@ -80,7 +80,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         .into_iter()
         .max()
         .unwrap_or(0) as u16;
-    let info_w = (longest + 13).clamp(40, inner.width / 2);
+    let info_w = (longest + 13).max(40).min(inner.width / 2);
     // The logo goes first when space is short: hints matter more.
     let logo_w = if inner.width.saturating_sub(info_w + LOGO_W) >= 2 * HINT_W {
         LOGO_W

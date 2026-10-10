@@ -216,10 +216,12 @@ async fn run(
                 suspend()?;
                 println!("Signing {profile} in again with az…");
                 let result = auth::login(std::path::Path::new("az"), Some(&profile), None).await;
-                // Reuse the terminal: building a new one asks the terminal
-                // for the cursor position, which can time out after az.
+                // Reuse the terminal, and repaint with a blank frame rather
+                // than `terminal.clear()`: both a new terminal and `clear`
+                // ask the terminal for the cursor position, and that answer
+                // can get lost after az (fablic then gave up and exited).
                 resume()?;
-                terminal.clear()?;
+                terminal.draw(|f| f.render_widget(ratatui::widgets::Clear, f.area()))?;
                 events = Some(EventStream::new());
                 if let Some(src) = sources.get(&profile) {
                     src.forget();
@@ -271,7 +273,11 @@ fn suspend() -> Result<()> {
 /// Take the terminal back after `suspend`.
 fn resume() -> Result<()> {
     crossterm::terminal::enable_raw_mode()?;
-    crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+    )?;
     Ok(())
 }
 
