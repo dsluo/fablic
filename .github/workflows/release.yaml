@@ -57,10 +57,18 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-15
             target: aarch64-apple-darwin
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name }}
       TARGET: ${{ matrix.target }}
+      EXE_SUFFIX: ${{ startsWith(matrix.os, 'windows-') && '.exe' || '' }}
     steps:
       - name: Checkout release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,9 +91,10 @@ jobs:
 
       - name: Smoke test
         run: |
-          "target/${TARGET}/release/fablic" --fake --snapshot 'j enter F'
+          "target/${TARGET}/release/fablic${EXE_SUFFIX}" --fake --snapshot 'j enter F'
 
       - name: Package
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           archive="fablic-${RELEASE_TAG}-${TARGET}"
@@ -93,11 +102,22 @@ jobs:
           cp "target/${TARGET}/release/fablic" README.md CHANGELOG.md "dist/${archive}/"
           tar -czf "dist/${archive}.tar.gz" -C dist "${archive}"
 
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = "fablic-$env:RELEASE_TAG-$env:TARGET"
+          New-Item -ItemType Directory -Path "dist/$archive" -Force | Out-Null
+          Copy-Item -LiteralPath "target/$env:TARGET/release/fablic.exe", "README.md", "CHANGELOG.md" -Destination "dist/$archive"
+          Compress-Archive -LiteralPath "dist/$archive" -DestinationPath "dist/$archive.zip"
+
       - name: Upload build artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binary-${{ matrix.target }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           if-no-files-found: error
 
   upload:
@@ -119,7 +139,7 @@ jobs:
 
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum -- *.tar.gz > SHA256SUMS
+        run: sha256sum -- *.tar.gz *.zip > SHA256SUMS
 
       - name: Upload release assets
-        run: gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+        run: gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --clobber

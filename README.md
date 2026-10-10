@@ -25,8 +25,9 @@ a much of the web UI functionality with the snappiness of a TUI experience.
 ## Installation
 
 Download the archive for your platform from [GitHub Releases](https://github.com/dsluo/fablic/releases).
-Releases provide macOS and Linux binaries for Intel/AMD (`x86_64`) and ARM
-(`aarch64`). Extract the archive and put `fablic` on your `PATH`. Install the
+Releases provide macOS, Linux, and Windows binaries for Intel/AMD (`x86_64`) and
+ARM (`aarch64`). Extract the archive and put `fablic` (`fablic.exe` on Windows)
+on your `PATH`. Install the
 [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) for sign-in;
 `--fake` works without it.
 
@@ -35,8 +36,13 @@ Each release includes `SHA256SUMS`. Verify a downloaded archive with
 `shasum -a 256 --ignore-missing -c SHA256SUMS` on macOS. Linux binaries are built
 on Ubuntu 24.04. macOS binaries are not notarized.
 
+Windows downloads are ZIP archives. In PowerShell, compare
+`(Get-FileHash .\fablic-X.Y.Z-TARGET.zip -Algorithm SHA256).Hash` with the entry
+for that archive in `SHA256SUMS`. The Azure CLI installer provides `az.cmd`,
+which fablic uses on Windows.
+
 To build from source, run `mise install` and `mise run build-release`; the binary
-is written to `target/release/fablic`.
+is written to `target/release/fablic` (`target/release/fablic.exe` on Windows).
 
 ## Sign-in and profiles
 

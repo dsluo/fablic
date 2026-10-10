@@ -15,9 +15,12 @@ Tags and release names use `X.Y.Z` without a `v` prefix. The bot maintains the
 manifest after bootstrap; do not bump release versions separately by hand.
 
 The CI workflow runs `mise run --skip-tools test`, `mise run --skip-tools lint`,
-and `mise run --skip-tools lint-workflows` on Linux and macOS for every PR,
-including release PRs. It also runs on pushes to `main` and merge queue events.
-Tests and builds use the committed Cargo lockfile.
+and `mise run --skip-tools lint-workflows` on Linux, macOS, and Windows for every
+PR, including release PRs. It also runs on pushes to `main` and merge queue
+events. Tests and builds use the committed Cargo lockfile. The login restoration
+and environment sign-in tests that use Unix shell stubs run on Linux and macOS;
+Windows uses a batch stub for account lookup, token cache, and ambiguous-account
+tests.
 
 Each job installs its required tools explicitly, then runs tasks with
 `mise run --skip-tools`. This keeps task execution from installing unrelated
@@ -38,10 +41,13 @@ The build matrix provides:
 | Linux ARM | `aarch64-unknown-linux-gnu` | Ubuntu 24.04 ARM |
 | macOS Intel | `x86_64-apple-darwin` | macOS 15 Intel |
 | macOS Apple Silicon | `aarch64-apple-darwin` | macOS 15 |
+| Windows Intel/AMD | `x86_64-pc-windows-msvc` | Windows Server 2025 |
+| Windows ARM | `aarch64-pc-windows-msvc` | Windows 11 ARM |
 
-After every build succeeds, the workflow uploads all four archives and
-`SHA256SUMS` to the GitHub Release. Archives use
-`fablic-X.Y.Z-TARGET.tar.gz` and contain the binary, README, and changelog.
+After every build succeeds, the workflow uploads all six archives and
+`SHA256SUMS` to the GitHub Release. Linux and macOS use
+`fablic-X.Y.Z-TARGET.tar.gz`; Windows uses `fablic-X.Y.Z-TARGET.zip`.
+Archives contain the binary (`fablic.exe` on Windows), README, and changelog.
 The release is visible while checks and builds run; downloads are ready when
 the `Release` workflow succeeds. Transient failures can be retried by rerunning the workflow; uploads
 replace assets with the same names. Fixes to tagged source or workflow code
@@ -56,7 +62,7 @@ The bot token allows CI to run on generated release PRs and publishing to run
 on generated releases; the default `GITHUB_TOKEN` suppresses those events.
 See [Release Please's token requirements](https://github.com/googleapis/release-please-action#github-credentials).
 
-Protect `main` with the CI checks `Check (ubuntu-24.04)` and `Check (macos-15)`
-required before merging. The release bot prepares PRs;
+Protect `main` with the CI checks `Check (ubuntu-24.04)`, `Check (macos-15)`, and
+`Check (windows-2025)` required before merging. The release bot prepares PRs;
 merging remains the release decision. Binary uploads use the workflow's built-in `GITHUB_TOKEN`
 with Contents write permission, and need no distribution service secrets.
