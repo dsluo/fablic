@@ -33,11 +33,19 @@ color = "#89b4fa"
 
 ### Signing in without az
 
-For an identity you don't want in az, give the profile `login = "device"` and run
-`fablic login <profile>` (a profile with no `name` is `default`, which is also
-what `fablic login` and `fablic logout` use without an argument). It shows a code to enter at microsoft.com/devicelogin,
-then keeps the sign-in (a refresh token and the account name) in the OS keychain
-under the service `fablic`. `fablic logout <profile>` removes it.
+For an identity you don't want in az, run `fablic login` (no config needed):
+
+```sh
+fablic login                                  # a profile named "default"
+fablic login partner --tenant partner.com     # or name it, and pick a tenant
+fablic logout partner
+```
+
+It shows a code to enter at microsoft.com/devicelogin, then keeps the sign-in (a
+refresh token and the account name) in the OS keychain under the service `fablic`,
+and records the profile in `~/.local/state/fablic/logins.json` so it shows up next
+to your az accounts. To give it a colour or make it read-only, add a profile of the
+same name to the config; the config's settings win:
 
 ```toml
 [[profiles]]
@@ -45,6 +53,7 @@ name = "partner"
 login = "device"
 tenant = "partner.onmicrosoft.com"   # optional; any work account by default
 client_id = "…"                      # optional; see below
+readonly = true
 ```
 
 By default this signs in as the Azure CLI's public client, as Microsoft's Azure

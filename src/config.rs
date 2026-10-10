@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -110,6 +110,17 @@ impl Config {
         Ok(self)
     }
 
+    /// Add the profiles signed in with `fablic login`, unless the file
+    /// defines a profile of that name (its settings win).
+    pub fn with_logins(mut self, logins: &[SavedLogin]) -> Config {
+        for l in logins {
+            if !self.profiles.iter().any(|p| p.name == l.name) {
+                self.profiles.push(l.profile());
+            }
+        }
+        self
+    }
+
     /// Whether the file says which az accounts to use. If not, every cached
     /// az account becomes a profile (after any device profiles).
     pub fn wants_az_accounts(&self) -> bool {
@@ -173,6 +184,52 @@ pub fn xdg(var: &str, fallback: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| directories::BaseDirs::new().map(|b| b.home_dir().join(fallback)))?;
     Some(base.join("fablic"))
+}
+
+/// A device sign-in made with `fablic login` for a profile the config file
+/// doesn't define. The refresh token itself is in the keychain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedLogin {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
+}
+
+impl SavedLogin {
+    pub fn profile(&self) -> Profile {
+        Profile {
+            name: self.name.clone(),
+            login: Login::Device,
+            account: None,
+            readonly: false,
+            color: None,
+            tenant: self.tenant.clone(),
+            client_id: self.client_id.clone(),
+        }
+    }
+}
+
+/// `fablic login`'s own record of sign-ins: `~/.local/state/fablic/logins.json`.
+pub fn logins_path() -> Option<PathBuf> {
+    state_dir().map(|d| d.join("logins.json"))
+}
+
+/// The recorded sign-ins; a missing or unreadable file is none.
+pub fn load_logins(path: Option<&Path>) -> Vec<SavedLogin> {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_logins(path: Option<&Path>, logins: &[SavedLogin]) -> Result<()> {
+    let path = path.context("no home directory to record the sign-in in")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(logins)? + "\n")
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 /// Logs and the action journal: `~/.local/state/fablic`.
@@ -261,6 +318,37 @@ mod tests {
             e.ends_with("two profiles are named default; give one a name"),
             "{e}"
         );
+    }
+
+    #[test]
+    fn signed_in_profiles_join_unless_the_file_names_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state/logins.json");
+        let logins = vec![
+            SavedLogin {
+                name: "default".into(),
+                tenant: Some("partner.com".into()),
+                client_id: None,
+            },
+            SavedLogin {
+                name: "partner".into(),
+                tenant: None,
+                client_id: None,
+            },
+        ];
+        save_logins(Some(&path), &logins).unwrap();
+        assert_eq!(load_logins(Some(&path)), logins);
+        assert!(load_logins(Some(&dir.path().join("none.json"))).is_empty());
+
+        let file: Config = toml::from_str(
+            "[[profiles]]\nname = \"partner\"\nlogin = \"device\"\nreadonly = true\n",
+        )
+        .unwrap();
+        let c = file.with_logins(&logins);
+        let names: Vec<&str> = c.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["partner", "default"]);
+        assert!(c.profiles[0].readonly, "the file's settings win");
+        assert_eq!(c.profiles[1].tenant.as_deref(), Some("partner.com"));
     }
 
     #[test]
