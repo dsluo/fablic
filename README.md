@@ -16,6 +16,12 @@ and `ctrl-p` has one profile of each kind (read-only, service principal,
 from the environment, signed out, failing). Nothing is saved; each start is
 fresh.
 
+## Why?
+
+As someone used to command line tools like `lazygit`, `sofka`, and `vim`, the web UI
+for Microsoft Fabric is painfully, ***painfully*** slow. This project hopes to create
+a much of the web UI functionality with the snappiness of a TUI experience.
+
 ## Installation
 
 Download the archive for your platform from [GitHub Releases](https://github.com/dsluo/fablic/releases).
@@ -31,12 +37,6 @@ on Ubuntu 24.04. macOS binaries are not notarized.
 
 To build from source, run `mise install` and `mise run build-release`; the binary
 is written to `target/release/fablic`.
-
-## Why?
-
-As someone used to command line tools like `lazygit`, `sofka`, and `vim`, the web UI
-for Microsoft Fabric is painfully, ***painfully*** slow. This project hopes to create
-a much of the web UI functionality with the snappiness of a TUI experience.
 
 ## Sign-in and profiles
 
