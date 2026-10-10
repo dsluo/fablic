@@ -47,6 +47,32 @@ struct Account {
 #[derive(Deserialize)]
 struct User {
     name: String,
+    /// `user` or `servicePrincipal`.
+    #[serde(rename = "type", default)]
+    kind: String,
+}
+
+/// One identity az has signed in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AzAccount {
+    /// A UPN, or a service principal's client id.
+    pub name: String,
+    pub tenant: String,
+    pub service_principal: bool,
+}
+
+/// How to sign a service principal in: fablic can't, it has no secret.
+pub fn service_principal_hint(client_id: &str, tenant: &str) -> String {
+    let tenant = if tenant.is_empty() {
+        "<tenant>"
+    } else {
+        tenant
+    };
+    format!(
+        "{client_id} is a service principal; sign it in with \
+         `az login --service-principal --username {client_id} --tenant {tenant} \
+         --password <secret or certificate path>`"
+    )
 }
 
 #[derive(Deserialize)]
@@ -70,13 +96,17 @@ impl AzCli {
         }
     }
 
-    /// Every account az has cached, deduplicated, in az's order.
-    pub async fn accounts() -> Result<Vec<String>> {
+    /// Every identity az has cached, deduplicated, in az's order.
+    pub async fn accounts() -> Result<Vec<AzAccount>> {
         let list = list_accounts(&PathBuf::from("az")).await?;
-        let mut out: Vec<String> = Vec::new();
+        let mut out: Vec<AzAccount> = Vec::new();
         for a in list {
-            if !out.contains(&a.user.name) {
-                out.push(a.user.name);
+            if !out.iter().any(|o| o.name == a.user.name) {
+                out.push(AzAccount {
+                    service_principal: a.user.kind == "servicePrincipal",
+                    name: a.user.name,
+                    tenant: a.tenant_id,
+                });
             }
         }
         Ok(out)
@@ -183,14 +213,20 @@ pub async fn login(az: &Path, account: Option<&str>, tenant: Option<&str>) -> Re
         .await
         .ok()
         .and_then(active);
-    let known_tenant = match (tenant, account) {
-        (Some(_), _) | (_, None) => None,
-        (None, Some(acct)) => list_accounts(&az).await.ok().and_then(|list| {
+    let known = match account {
+        None => None,
+        Some(acct) => list_accounts(&az).await.ok().and_then(|list| {
             list.into_iter()
                 .find(|a| a.user.name.eq_ignore_ascii_case(acct))
-                .map(|a| a.tenant_id)
-                .filter(|t| !t.is_empty())
         }),
+    };
+    // An interactive login can't sign a service principal in.
+    if let Some(a) = known.as_ref().filter(|a| a.user.kind == "servicePrincipal") {
+        bail!("{}", service_principal_hint(&a.user.name, &a.tenant_id));
+    }
+    let known_tenant = match tenant {
+        Some(_) => None,
+        None => known.map(|a| a.tenant_id).filter(|t| !t.is_empty()),
     };
     let mut args = vec!["login", "--allow-no-subscriptions"];
     if let Some(t) = tenant.or(known_tenant.as_deref()) {

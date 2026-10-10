@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
             account: "fake data".into(),
             readonly: true,
             color: None,
-            auth: Default::default(),
+            ..Default::default()
         };
         let src: SharedSource = Arc::new(FakeSource);
         (vec![p], 0, HashMap::from([("fake data".to_owned(), src)]))
@@ -115,13 +115,7 @@ async fn main() -> Result<()> {
 async fn live_profiles(
     args: &Args,
 ) -> Result<(Vec<ProfileInfo>, usize, HashMap<String, SharedSource>)> {
-    let mut config = Config::load(Config::path().as_deref())?;
-    if config.profiles.is_empty() {
-        let accounts = AzCli::accounts()
-            .await
-            .context("listing az accounts for default profiles")?;
-        config = config.with_az_accounts(accounts);
-    }
+    let (config, az) = profiles_config().await?;
     let active = config.initial(args.profile.as_deref())?;
     let mut sources = HashMap::new();
     let mut profiles = Vec::new();
@@ -129,10 +123,13 @@ async fn live_profiles(
         let tokens = Arc::new(AzCli::new(&p.account));
         let src: SharedSource = Arc::new(FabricSource::new(tokens));
         sources.insert(p.account.clone(), src);
+        let known = az.iter().find(|a| a.name.eq_ignore_ascii_case(&p.account));
         profiles.push(ProfileInfo {
             color: p.color.as_deref().and_then(|c| Color::from_str(c).ok()),
             auth: Default::default(),
             readonly: p.readonly || args.readonly,
+            service_principal: known.is_some_and(|a| a.service_principal),
+            tenant: known.map(|a| a.tenant.clone()).unwrap_or_default(),
             name: p.name,
             account: p.account,
         });
@@ -140,32 +137,40 @@ async fn live_profiles(
     Ok((profiles, active, sources))
 }
 
+/// The profiles fablic offers (the config's, or one per az identity) and
+/// what az knows about each identity (empty if az can't be asked).
+async fn profiles_config() -> Result<(Config, Vec<auth::AzAccount>)> {
+    let config = Config::load(Config::path().as_deref())?;
+    let az = AzCli::accounts().await;
+    if config.profiles.is_empty() {
+        let az = az.context("listing az accounts for default profiles")?;
+        return Ok((config.with_az_accounts(&az), az));
+    }
+    Ok((config, az.unwrap_or_default()))
+}
+
 /// `fablic login [profile]`: `az login` for that profile's account.
 async fn login(profile: Option<&str>, tenant: Option<&str>) -> Result<()> {
     let account = match profile {
         None => None,
         Some(wanted) => {
-            let config = Config::load(Config::path().as_deref())?;
+            let (config, _) = profiles_config().await?;
             match config.initial(Some(wanted)) {
                 Ok(i) => Some(config.profiles[i].account.clone()),
-                // Not a configured profile: an account, or an az-derived name.
+                // Not a profile yet: an account az hasn't seen.
                 Err(_) if wanted.contains('@') => Some(wanted.to_owned()),
-                Err(_) => {
-                    let accounts = AzCli::accounts().await.unwrap_or_default();
-                    let found = accounts
-                        .into_iter()
-                        .find(|a| a.split('@').next() == Some(wanted));
-                    Some(
-                        found
-                            .with_context(|| format!("no profile or az account named {wanted}"))?,
-                    )
-                }
+                Err(e) => return Err(e),
             }
         }
     };
     auth::login(std::path::Path::new("az"), account.as_deref(), tenant).await?;
-    let accounts = AzCli::accounts().await.unwrap_or_default();
-    println!("az is signed in as: {}", accounts.join(", "));
+    let names: Vec<String> = AzCli::accounts()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    println!("az is signed in as: {}", names.join(", "));
     Ok(())
 }
 

@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::auth::AzAccount;
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -85,15 +87,17 @@ impl Config {
     }
 
     /// Profiles from the file, or one per cached az account when the file has none.
-    pub fn with_az_accounts(mut self, accounts: Vec<String>) -> Config {
+    pub fn with_az_accounts(mut self, accounts: &[AzAccount]) -> Config {
         if self.profiles.is_empty() {
             self.profiles = accounts
-                .into_iter()
-                .map(|account| Profile {
-                    name: self.names.get(&account).cloned().unwrap_or_else(|| {
-                        account.split('@').next().unwrap_or(&account).to_owned()
-                    }),
-                    account,
+                .iter()
+                .map(|a| Profile {
+                    name: self
+                        .names
+                        .get(&a.name)
+                        .cloned()
+                        .unwrap_or_else(|| auto_name(a)),
+                    account: a.name.clone(),
                     readonly: false,
                     color: None,
                 })
@@ -122,6 +126,16 @@ impl Config {
             ),
             None => Ok(0),
         }
+    }
+}
+
+/// A profile name for an az identity: the part of a UPN before the `@`, or
+/// `sp-` and the first block of a service principal's client id.
+fn auto_name(a: &AzAccount) -> String {
+    if a.service_principal {
+        format!("sp-{}", a.name.split('-').next().unwrap_or(&a.name))
+    } else {
+        a.name.split('@').next().unwrap_or(&a.name).to_owned()
     }
 }
 
@@ -185,6 +199,20 @@ pub fn state_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    fn az(name: &str) -> AzAccount {
+        AzAccount {
+            name: name.into(),
+            tenant: "t".into(),
+            service_principal: !name.contains('@'),
+        }
+    }
+
+    #[test]
+    fn service_principals_get_short_names() {
+        let c = Config::default().with_az_accounts(&[az("00000000-1111-2222")]);
+        assert_eq!(c.profiles[0].name, "sp-00000000");
+    }
+
     #[test]
     fn parses_profiles_and_picks_initial() {
         let c: Config = toml::from_str(
@@ -208,7 +236,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_az_accounts() {
-        let c = Config::default().with_az_accounts(vec!["admin1@a.net".into(), "me@b.org".into()]);
+        let c = Config::default().with_az_accounts(&[az("admin1@a.net"), az("me@b.org")]);
         assert_eq!(c.profiles[0].name, "admin1");
         assert_eq!(c.profiles[1].account, "me@b.org");
         assert_eq!(c.initial(None).unwrap(), 0);
@@ -243,7 +271,7 @@ mod tests {
         rename(&path, "00000000-1111", "etl-sp").unwrap();
         let c = Config::load(Some(&path))
             .unwrap()
-            .with_az_accounts(vec!["00000000-1111".into(), "me@b.org".into()]);
+            .with_az_accounts(&[az("00000000-1111"), az("me@b.org")]);
         let names: Vec<&str> = c.profiles.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["etl-sp", "me"]);
 

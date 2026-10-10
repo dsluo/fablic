@@ -56,9 +56,15 @@ impl App {
         }
     }
 
-    /// `l` in the picker: sign the highlighted profile in again.
+    /// `l` in the picker: sign the highlighted profile in again. A service
+    /// principal needs its secret, so it gets the az command instead.
     fn login(&mut self) {
-        let account = self.profiles[self.picker].account.clone();
+        let p = &self.profiles[self.picker];
+        if p.service_principal {
+            let hint = crate::auth::service_principal_hint(&p.account, &p.tenant);
+            return self.flash(Level::Warn, hint);
+        }
+        let account = p.account.clone();
         self.set_auth(&account, Auth::Checking);
         self.effects.push(Effect::Login { profile: account });
     }
@@ -167,7 +173,7 @@ mod tests {
             account: a.into(),
             readonly: false,
             color: None,
-            auth: Default::default(),
+            ..Default::default()
         };
         let mut app = App::new(vec![p("fabric", "admin@x"), p("devops", "me@y")], 0);
         settle(&mut app);
@@ -251,6 +257,34 @@ mod tests {
         assert_eq!(
             Auth::from_error("running az (is the Azure CLI installed?)"),
             Auth::Failed("running az (is the Azure CLI installed?)".into())
+        );
+    }
+
+    #[test]
+    fn service_principals_get_the_az_command_not_a_browser() {
+        let mut app = App::new(
+            vec![ProfileInfo {
+                name: "sp".into(),
+                account: "00000000-1111".into(),
+                service_principal: true,
+                tenant: "t-1".into(),
+                ..Default::default()
+            }],
+            0,
+        );
+        settle(&mut app);
+        app.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        settle(&mut app);
+        app.on_key(key(KeyCode::Char('l')));
+        assert!(
+            app.take_effects()
+                .iter()
+                .all(|e| !matches!(e, Effect::Login { .. }))
+        );
+        let status = &app.status.as_ref().unwrap().text;
+        assert!(
+            status.contains("az login --service-principal --username 00000000-1111 --tenant t-1"),
+            "{status}"
         );
     }
 }

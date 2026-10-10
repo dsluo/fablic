@@ -210,7 +210,7 @@ mod tests {
                 account: "a@x".into(),
                 readonly: true,
                 color: None,
-                auth: Default::default(),
+                ..Default::default()
             }],
             0,
         );

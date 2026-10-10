@@ -158,7 +158,7 @@ pub struct Detail {
     pub scroll: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ProfileInfo {
     pub name: String,
     /// Also the key for the profile's source and cached rows, since the
@@ -167,6 +167,10 @@ pub struct ProfileInfo {
     pub readonly: bool,
     pub color: Option<Color>,
     pub auth: Auth,
+    /// A service principal: az signs it in with a secret fablic doesn't have.
+    pub service_principal: bool,
+    /// Its Entra tenant, when az knows it.
+    pub tenant: String,
 }
 
 /// Whether a profile can get tokens, as last checked.
@@ -566,7 +570,7 @@ pub(crate) mod tests {
             account: "me@example.com".into(),
             readonly: false,
             color: None,
-            auth: Default::default(),
+            ..Default::default()
         };
         let mut app = App::new(vec![profile], 0);
         settle(&mut app);

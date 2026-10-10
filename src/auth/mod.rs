@@ -5,7 +5,7 @@ mod az;
 use anyhow::Result;
 use futures::future::BoxFuture;
 
-pub use az::{AzCli, login};
+pub use az::{AzAccount, AzCli, login, service_principal_hint};
 
 pub const FABRIC: &str = "https://api.fabric.microsoft.com";
 /// OneLake (DFS and table APIs) takes storage-audience tokens.

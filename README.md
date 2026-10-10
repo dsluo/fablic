@@ -19,7 +19,10 @@ several identities can be used side by side. Switch with `ctrl-p` or `:ctx <name
 To sign in (or sign in again when your tenant's session limit runs out), run
 `fablic login <profile>`. It runs `az login` for that account's tenant, then makes
 az's previously active account active again, since `az login` always switches to
-the new login and other tools may rely on the active one. The profile picker
+the new login and other tools may rely on the active one. Service principals
+(`az login --service-principal`) can't sign in interactively; for those it prints
+the `az` command to run instead, since fablic never sees their secret. Profiles
+made from them are named `sp-` plus the first block of the client id. The profile picker
 (`ctrl-p`) shows which profiles are signed in, and `l` there does the same without
 leaving fablic.
 

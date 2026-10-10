@@ -361,11 +361,12 @@ fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
             .unwrap_or(0)
     };
     let name_w = longest(|p| &p.name).min(PROFILE_NAME_W);
-    let ro = if app.profiles.iter().any(|p| p.readonly) {
-        " [read-only]".len()
-    } else {
-        0
-    };
+    let ro = app
+        .profiles
+        .iter()
+        .map(|p| tags(p).len())
+        .max()
+        .unwrap_or(0);
     // "● " + name + gap + status + account + tag, inside the border.
     let fixed = 2 + name_w + 2 + AUTH_W + ro;
     let want = fixed + longest(|p| &p.account);
@@ -402,6 +403,9 @@ fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
                     base.fg(t.text),
                 ),
             ];
+            if p.service_principal {
+                spans.push(Span::styled(" [service principal]", base.fg(t.dim)));
+            }
             if p.readonly {
                 spans.push(Span::styled(" [read-only]", base.fg(t.bad)));
             }
@@ -414,6 +418,18 @@ fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
         Style::new().fg(t.dim),
     ));
     f.render_widget(List::new(items).block(block), area);
+}
+
+/// The tags after a profile's account, for sizing the picker.
+fn tags(p: &crate::app::ProfileInfo) -> String {
+    let mut out = String::new();
+    if p.service_principal {
+        out.push_str(" [service principal]");
+    }
+    if p.readonly {
+        out.push_str(" [read-only]");
+    }
+    out
 }
 
 const PROFILE_HINTS: &str = "enter switch · e rename · l sign in again · esc close";
@@ -606,16 +622,15 @@ mod tests {
             account: account.into(),
             readonly,
             color: None,
-            auth: Default::default(),
+            ..Default::default()
         };
         let mut app = App::new(
             vec![
                 p("fabric-admin", "admin01@fabric.contoso.example", false),
-                p(
-                    "00000000-1111-2222-3333-444444444444",
-                    "00000000-1111-2222-3333-444444444444",
-                    true,
-                ),
+                ProfileInfo {
+                    service_principal: true,
+                    ..p("sp-00000000", "00000000-1111-2222-3333-444444444444", true)
+                },
                 p("devops1", "me@devops.example", false),
             ],
             0,
