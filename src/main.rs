@@ -29,7 +29,7 @@ use auth::AzCli;
 use config::Config;
 use effects::Ctx;
 use fabric::FabricSource;
-use fabric::fake::FakeSource;
+use fabric::fake::{FakeAuth, FakeSource};
 use source::SharedSource;
 use theme::Theme;
 
@@ -83,15 +83,7 @@ async fn main() -> Result<()> {
     }
 
     let (profiles, active, sources) = if args.fake {
-        let p = ProfileInfo {
-            name: "fake".into(),
-            account: "fake data".into(),
-            readonly: true,
-            color: None,
-            ..Default::default()
-        };
-        let src: SharedSource = Arc::new(FakeSource);
-        (vec![p], 0, HashMap::from([("fake data".to_owned(), src)]))
+        fake_profiles(args.readonly)
     } else {
         live_profiles(&args).await?
     };
@@ -145,6 +137,66 @@ async fn live_profiles(
         });
     }
     Ok((profiles, active, sources))
+}
+
+/// `--fake`: a made-up tenant behind one profile of each kind, so every
+/// part of the picker shows. Writes work (on the fake data) except in the
+/// read-only one; `contractor` needs signing in again (`ctrl-p`, `l`).
+fn fake_profiles(readonly: bool) -> (Vec<ProfileInfo>, usize, HashMap<String, SharedSource>) {
+    const SP: &str = "00000000-1111-2222-3333-444444444444";
+    const ENV_SP: &str = "99999999-8888-7777-6666-555555555555";
+    let tenant = "contoso.example".to_owned();
+    let p = |name: &str, account: &str| ProfileInfo {
+        name: name.into(),
+        account: account.into(),
+        readonly,
+        tenant: tenant.clone(),
+        ..Default::default()
+    };
+    let profiles = vec![
+        ProfileInfo {
+            color: Some(Color::Rgb(0x89, 0xb4, 0xfa)),
+            ..p("dev", "dev@contoso.example")
+        },
+        ProfileInfo {
+            readonly: true,
+            color: Some(Color::Rgb(0xf3, 0x8b, 0xa8)),
+            ..p("prod", "admin@contoso.example")
+        },
+        ProfileInfo {
+            service_principal: true,
+            ..p("sp-00000000", SP)
+        },
+        ProfileInfo {
+            service_principal: true,
+            from_env: true,
+            ..p("env", ENV_SP)
+        },
+        p("contractor", "guest@fabrikam.example"),
+        p("partner", "ops@partner.example"),
+    ];
+    let live = || FakeSource::default().live();
+    let sources: [(&str, FakeSource); 6] = [
+        ("dev@contoso.example", live().admin()),
+        ("admin@contoso.example", live()),
+        (SP, live()),
+        (ENV_SP, live()),
+        ("guest@fabrikam.example", live().auth(FakeAuth::Expired)),
+        (
+            "ops@partner.example",
+            live().auth(FakeAuth::Broken(
+                "AADSTS50020: User account 'ops@partner.example' from identity provider \
+                 'live.com' does not exist in tenant 'Contoso' and cannot access the \
+                 application in that tenant."
+                    .into(),
+            )),
+        ),
+    ];
+    let sources = sources
+        .into_iter()
+        .map(|(a, s)| (a.to_owned(), Arc::new(s) as SharedSource))
+        .collect();
+    (profiles, 0, sources)
 }
 
 /// Where the environment's service principal keeps its own az logins.
@@ -253,6 +305,15 @@ async fn run(
     loop {
         for effect in app.take_effects() {
             if let Effect::Login { profile } = effect {
+                // The fake source signs itself in; no az, no terminal.
+                if let Some(signing_in) = sources.get(&profile).and_then(|s| s.sign_in()) {
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        let result = signing_in.await.map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(Msg::LoggedIn { profile, result });
+                    });
+                    continue;
+                }
                 drop(events.take());
                 suspend()?;
                 println!("Signing {profile} in again with az…");

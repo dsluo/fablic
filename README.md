@@ -10,6 +10,12 @@ fablic --fake          # built-in fake data, no sign-in needed
 fablic login [profile] # az login, keeping az's active account as it was
 ```
 
+`--fake` runs against a made-up tenant, so everything can be tried without
+Fabric: writes change the fake data, runs you start queue, run and finish,
+and `ctrl-p` has one profile of each kind (read-only, service principal,
+from the environment, signed out, failing). Nothing is saved; each start is
+fresh.
+
 ## Why?
 
 As someone used to command line tools like `lazygit`, `sofka`, and `vim`, the web UI

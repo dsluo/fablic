@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(app.mode, Mode::Detail);
         assert_eq!(app.detail.title, "Tables/customers › schema");
         assert_eq!(app.detail.lines[0], "── dbo.customers ──");
-        assert!(app.detail.lines[2].starts_with("id "));
+        assert!(app.detail.lines[2].starts_with("customer_id "));
     }
 
     #[test]

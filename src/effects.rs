@@ -141,12 +141,15 @@ pub async fn perform(effect: Effect, sources: &Sources, ctx: &Ctx) -> Option<Msg
             };
             Some(Msg::Auth { profile, result })
         }
-        // The event loop signs in itself, since az needs the terminal;
+        // The event loop runs az login itself, since az needs the terminal;
         // anywhere else (tests, snapshots) there is no terminal to lend.
-        Effect::Login { profile } => Some(Msg::LoggedIn {
-            profile,
-            result: Err("signing in needs the interactive terminal".into()),
-        }),
+        Effect::Login { profile } => {
+            let result = match source(&profile).ok().and_then(|s| s.sign_in()) {
+                Some(signing_in) => signing_in.await.map_err(err),
+                None => Err("signing in needs the interactive terminal".into()),
+            };
+            Some(Msg::LoggedIn { profile, result })
+        }
         Effect::RenameProfile { profile, name } => Some(match &ctx.config_path {
             Some(path) => match crate::config::rename(path, &profile, &name) {
                 Ok(()) => Msg::Status(
