@@ -48,7 +48,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     }
 
     let columns = Kind::columns_for(q);
-    let widths = column_widths(app, columns);
+    let avail = area.width.saturating_sub(2) as usize;
+    let widths = column_widths(app, columns, avail);
     let header = Row::new(
         columns
             .iter()
@@ -64,9 +65,25 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             Health::Bad => t.bad,
             Health::Neutral => t.text,
         };
-        Row::new(r.cells.iter().map(|c| Cell::from(c.as_str()))).style(Style::new().fg(color))
+        let cells = r
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(c, text)| match columns.get(c) {
+                Some(title) if is_path(title) => Cell::from(tail(text, widths[c])),
+                _ => Cell::from(text.as_str()),
+            });
+        Row::new(cells).style(Style::new().fg(color))
     });
-    let table = Table::new(rows, widths)
+    // The last column takes whatever is left over.
+    let constraints = widths.iter().enumerate().map(|(c, &w)| {
+        if c + 1 == widths.len() {
+            Constraint::Fill(1)
+        } else {
+            Constraint::Length(w as u16)
+        }
+    });
+    let table = Table::new(rows, constraints)
         .header(header)
         .block(block)
         .column_spacing(2)
@@ -74,33 +91,115 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     f.render_stateful_widget(table, area, &mut app.table);
 }
 
-/// Widest a column may grow. The first column is the name, so it gets the most;
-/// free text like descriptions gets the least, since describe shows it in full.
+/// Widest a column may grow. The first column is the name, so it gets a lot;
+/// paths get more, since their end is the useful part; free text like
+/// descriptions gets the least, since describe shows it in full.
 fn column_cap(index: usize, title: &str) -> usize {
     match (index, title) {
+        (_, "FOLDER" | "PATH") => 64,
         (0, _) => 48,
         (_, "DESCRIPTION") => 24,
         _ => 32,
     }
 }
 
-/// Each column as wide as its widest cell (capped), the last one takes the rest.
-fn column_widths(app: &App, columns: &[&str]) -> Vec<Constraint> {
-    let n = columns.len();
-    (0..n)
+/// Columns whose cells are paths: cut from the left, keeping the deepest part.
+fn is_path(title: &str) -> bool {
+    matches!(title, "FOLDER" | "PATH")
+}
+
+/// How narrow a column may get when the table doesn't fit: ids can vanish,
+/// everything else keeps its header (and names a usable minimum).
+fn column_floor(index: usize, title: &str) -> usize {
+    match (index, title) {
+        (_, "ID") => 0,
+        (0, _) => title.len().max(20),
+        _ => title.len(),
+    }
+}
+
+/// Fit `desired` widths into `avail` columns (with two spaces between
+/// columns). Ids give way first, then descriptions; after that space comes
+/// from whichever column is widest at the time, so a long name and a long
+/// path shrink toward each other. Nothing goes below its floor.
+fn fit_widths(desired: &[usize], columns: &[&str], avail: usize) -> Vec<usize> {
+    let n = desired.len();
+    let mut w = desired.to_vec();
+    let needed = w.iter().sum::<usize>() + 2 * n.saturating_sub(1);
+    let mut over = needed.saturating_sub(avail);
+    let floor = |i: usize| column_floor(i, columns[i]);
+    for t in ["ID", "DESCRIPTION"] {
+        if let Some(i) = columns.iter().position(|c| *c == t) {
+            let take = over.min(w[i].saturating_sub(floor(i)));
+            w[i] -= take;
+            over -= take;
+        }
+    }
+    while over > 0 {
+        let Some(i) = (0..n)
+            .filter(|&i| w[i] > floor(i))
+            .max_by_key(|&i| (w[i], n - i))
+        else {
+            break;
+        };
+        w[i] -= 1;
+        over -= 1;
+    }
+    w
+}
+
+/// Each column as wide as its widest cell (capped), shrunk to fit `avail`.
+fn column_widths(app: &App, columns: &[&str], avail: usize) -> Vec<usize> {
+    let desired: Vec<usize> = (0..columns.len())
         .map(|c| {
-            if c == n - 1 {
-                return Constraint::Min(4);
-            }
-            let widest = app
-                .view
+            app.view
                 .iter()
                 .filter_map(|&i| app.rows[i].cells.get(c))
                 .map(|s| s.chars().count())
                 .chain(std::iter::once(columns[c].len()))
                 .max()
-                .unwrap_or(4);
-            Constraint::Length(widest.min(column_cap(c, columns[c])) as u16)
+                .unwrap_or(4)
+                .min(column_cap(c, columns[c]))
         })
-        .collect()
+        .collect();
+    fit_widths(&desired, columns, avail)
+}
+
+/// A path cut to `width` from the left: `…/ingest/shop`.
+fn tail(s: &str, width: usize) -> String {
+    let n = s.chars().count();
+    if n <= width || width == 0 {
+        return s.to_owned();
+    }
+    let keep: String = s.chars().skip(n - (width - 1)).collect();
+    format!("…{keep}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_and_descriptions_give_way_before_folders() {
+        let cols = ["NAME", "TYPE", "FOLDER", "DESCRIPTION", "ID"];
+        let desired = [43, 16, 45, 24, 36];
+        // 164 + 8 spacing wanted, 118 available: 54 to give back.
+        let w = fit_widths(&desired, &cols, 118);
+        assert_eq!(
+            w,
+            [41, 16, 42, 11, 0],
+            "ids go, descriptions keep their header"
+        );
+        // Narrower: name and folder shrink toward each other.
+        let w = fit_widths(&desired, &cols, 90);
+        assert_eq!(w, [27, 16, 28, 11, 0]);
+        assert_eq!(w.iter().sum::<usize>() + 8, 90);
+        assert_eq!(w.iter().sum::<usize>() + 8, 90);
+    }
+
+    #[test]
+    fn paths_keep_their_end() {
+        assert_eq!(tail("/ETL_CFG_Tables_Insertion", 12), "…s_Insertion");
+        assert_eq!(tail("/ingest", 12), "/ingest");
+    }
 }
