@@ -16,6 +16,22 @@ and `ctrl-p` has one profile of each kind (read-only, service principal,
 from the environment, signed out, failing). Nothing is saved; each start is
 fresh.
 
+## Installation
+
+Download the archive for your platform from [GitHub Releases](https://github.com/dsluo/fablic/releases).
+Releases provide macOS and Linux binaries for Intel/AMD (`x86_64`) and ARM
+(`aarch64`). Extract the archive and put `fablic` on your `PATH`. Install the
+[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) for sign-in;
+`--fake` works without it.
+
+Each release includes `SHA256SUMS`. Verify a downloaded archive with
+`sha256sum --ignore-missing -c SHA256SUMS` on Linux, or
+`shasum -a 256 --ignore-missing -c SHA256SUMS` on macOS. Linux binaries are built
+on Ubuntu 24.04. macOS binaries are not notarized.
+
+To build from source, run `mise install` and `mise run build-release`; the binary
+is written to `target/release/fablic`.
+
 ## Why?
 
 As someone used to command line tools like `lazygit`, `sofka`, and `vim`, the web UI
@@ -99,14 +115,19 @@ profiles and recorded in `~/.local/state/fablic/journal.log`.
 Tools are pinned in `mise.toml`:
 
 ```sh
-mise install      # rust, cargo-nextest, cargo-insta
+mise install      # rust, cargo-nextest, cargo-insta, actionlint
 mise run dev      # run fablic
 mise run test     # test suite
 mise run lint     # clippy + rustfmt
+mise run lint-workflows # GitHub Actions checks
 ```
 
 `fablic --snapshot 'STEPS'` replays keys headlessly and prints one frame, e.g.
 `fablic --fake --snapshot 'j enter F'`. Logs go to `~/.local/state/fablic/fablic.log` (`FABLIC_LOG=debug` for more).
+
+Releases are prepared as pull requests by Release Please. Before 1.0, features
+and fixes bump the patch version; breaking changes bump the minor version.
+See the [release process](docs/releases.md) for setup and publishing.
 
 ## AI Usage Disclosure
 

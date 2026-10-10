@@ -1,6 +1,7 @@
 [tools]
 rust = { version = "1.99", components = "clippy,rustfmt" }
 cargo-insta = "latest"
+actionlint = "1.7.12"
 "github:nextest-rs/nextest" = { version = "latest", version_prefix = "cargo-nextest-", bin = "cargo-nextest" }
 
 [env]
@@ -12,11 +13,19 @@ run = "cargo run --"
 
 [tasks.test]
 description = "Run the test suite"
-run = "cargo nextest run"
+run = "cargo nextest run --locked"
 
 [tasks.lint]
 description = "Clippy and rustfmt check"
-run = ["cargo clippy --all-targets -- -D warnings", "cargo fmt --check"]
+run = ["cargo clippy --locked --all-targets -- -D warnings", "cargo fmt --check"]
+
+[tasks.lint-workflows]
+description = "Check GitHub Actions workflows"
+run = "actionlint"
+
+[tasks.build-release]
+description = "Build the release binary"
+run = "cargo build --release --locked --bin fablic"
 
 [tasks.snap]
 description = "Review pending insta snapshots"

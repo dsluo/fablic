@@ -7,6 +7,10 @@ Use `<type>(<optional scope>): <description>`, e.g. `feat(tui): add describe
 view` or `fix(auth): refresh expired token`. Common types: `feat`, `fix`,
 `refactor`, `docs`, `test`, `chore`, `build`, `ci`, `perf`, `style`. Mark
 breaking changes with `!` after the type/scope or a `BREAKING CHANGE:` footer.
+PR titles follow the same format so squash merges preserve the release signal.
+Release Please prepares version bumps and changelogs; see the
+[release process](docs/releases.md). For workflow changes, also run
+`mise run lint-workflows`.
 
 **Attribution: `Assisted-by`, never `Signed-off-by` or `Co-authored-by`.** Those
 trailers make a claim about authorship and responsibility that only the human
