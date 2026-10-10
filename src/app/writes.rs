@@ -59,7 +59,41 @@ pub struct Prompt {
     /// The line under the input.
     pub hint: String,
     pub purpose: Purpose,
+    /// Highlighted entry of `choices`, for prompts that pick from a list.
+    pub choice: usize,
 }
+
+impl Prompt {
+    /// Everything a picking prompt can offer, regardless of the filter.
+    pub fn all_choices(&self) -> Option<&'static [&'static str]> {
+        match self.purpose {
+            Purpose::NewType { .. } => Some(CREATABLE),
+            Purpose::Role { .. } => Some(&ROLES),
+            _ => None,
+        }
+    }
+
+    /// What's left to pick from after filtering by `input`.
+    pub fn choices(&self, input: &str) -> Option<Vec<&'static str>> {
+        match self.purpose {
+            Purpose::NewType { .. } => Some(creatable_matches(input)),
+            Purpose::Role { .. } => {
+                let t = input.trim().to_lowercase();
+                Some(
+                    ROLES
+                        .iter()
+                        .copied()
+                        .filter(|r| r.to_lowercase().starts_with(&t))
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The hint under a picking prompt.
+const PICK_HINT: &str = "type to filter · ↑↓ choose · enter picks · esc cancels";
 
 /// `m` / `p`: what is being moved, and from which workspace.
 #[derive(Debug, Clone)]
@@ -72,28 +106,6 @@ fn place(folder: &Option<Ref>) -> String {
     match folder {
         Some(f) => f.name.clone(),
         None => "the workspace root".into(),
-    }
-}
-
-/// The types still matching what's typed, for the line under the input.
-fn type_hint(typed: &str) -> String {
-    match creatable_matches(typed)[..] {
-        [] => "nothing matches; try lh, nb, pl, folder, …".into(),
-        [one] => format!("{one} · enter picks it"),
-        ref many => format!("{} · tab completes", many.join(" / ")),
-    }
-}
-
-/// `v` -> Viewer, `contrib` -> Contributor; `None` unless exactly one matches.
-pub fn parse_role(s: &str) -> Option<&'static str> {
-    let s = s.trim().to_lowercase();
-    if s.is_empty() {
-        return None;
-    }
-    let mut hits = ROLES.iter().filter(|r| r.to_lowercase().starts_with(&s));
-    match (hits.next(), hits.next()) {
-        (Some(r), None) => Some(r),
-        _ => None,
     }
 }
 
@@ -126,6 +138,7 @@ impl App {
             title,
             hint: hint.to_owned(),
             purpose,
+            choice: 0,
         });
         self.mode = Mode::Prompt;
     }
@@ -224,12 +237,7 @@ impl App {
             Some(t) if CREATABLE.contains(&t.as_str()) => self.ask_name(workspace, parent, t),
             _ => {
                 let title = format!("new … in {}", place(&parent));
-                self.ask(
-                    title,
-                    &type_hint(""),
-                    "",
-                    Purpose::NewType { workspace, parent },
-                )
+                self.ask(title, PICK_HINT, "", Purpose::NewType { workspace, parent })
             }
         }
     }
@@ -379,18 +387,24 @@ impl App {
             id: row.id.clone(),
             name: row.name.clone(),
         };
-        let current = row.field("role").unwrap_or("").to_owned();
+        let current = ROLES
+            .iter()
+            .position(|r| Some(*r) == row.field("role"))
+            .unwrap_or(0);
         let title = format!("new role for {}", assignment.name);
         self.ask(
             title,
-            &ROLES.join(" / "),
-            &current,
+            PICK_HINT,
+            "",
             Purpose::Role {
                 workspace,
                 principal: None,
                 assignment: Some(assignment),
             },
         );
+        if let Some(p) = &mut self.prompt {
+            p.choice = current;
+        }
     }
 
     pub(super) fn key_prompt(&mut self, key: KeyEvent) {
@@ -402,13 +416,8 @@ impl App {
                 self.flash(Level::Info, "cancelled");
             }
             KeyCode::Enter => return self.submit(),
-            KeyCode::Tab => {
-                if let Some(Purpose::NewType { .. }) = self.prompt.as_ref().map(|p| &p.purpose)
-                    && let Some(first) = creatable_matches(&self.input).first()
-                {
-                    self.input = first.to_string();
-                }
-            }
+            KeyCode::Up => return self.move_choice(-1),
+            KeyCode::Down | KeyCode::Tab => return self.move_choice(1),
             KeyCode::Backspace => {
                 self.input.pop();
             }
@@ -416,13 +425,28 @@ impl App {
                 self.input.clear()
             }
             KeyCode::Char(c) => self.input.push(c),
-            _ => {}
+            _ => return,
         }
-        if let Some(p) = &mut self.prompt
-            && matches!(p.purpose, Purpose::NewType { .. })
-        {
-            p.hint = type_hint(&self.input);
+        // The filter changed: start again from the best match.
+        if let Some(p) = &mut self.prompt {
+            p.choice = 0;
         }
+    }
+
+    fn move_choice(&mut self, by: isize) {
+        let Some(p) = &mut self.prompt else {
+            return;
+        };
+        let n = p.choices(&self.input).map_or(0, |c| c.len());
+        if n > 0 {
+            p.choice = (p.choice as isize + by).rem_euclid(n as isize) as usize;
+        }
+    }
+
+    /// The highlighted choice of a picking prompt.
+    fn picked(&self) -> Option<&'static str> {
+        let p = self.prompt.as_ref()?;
+        p.choices(&self.input)?.get(p.choice).copied()
     }
 
     fn submit(&mut self) {
@@ -452,8 +476,8 @@ impl App {
                 description: text,
             },
             Purpose::NewType { workspace, parent } => {
-                let [item_type] = creatable_matches(&text)[..] else {
-                    return self.flash(Level::Warn, "type more until one type is left");
+                let Some(item_type) = self.picked() else {
+                    return self.flash(Level::Warn, "nothing matches");
                 };
                 self.prompt = None;
                 return self.ask_name(workspace, parent, item_type.to_owned());
@@ -498,7 +522,8 @@ impl App {
                 self.input.clear();
                 self.prompt = Some(Prompt {
                     title: format!("role for {text}"),
-                    hint: ROLES.join(" / "),
+                    hint: PICK_HINT.into(),
+                    choice: 0,
                     purpose: Purpose::Role {
                         workspace,
                         principal: Some(text),
@@ -512,7 +537,7 @@ impl App {
                 principal,
                 assignment,
             } => {
-                let Some(role) = parse_role(&text) else {
+                let Some(role) = self.picked() else {
                     return self.flash(Level::Warn, format!("pick one of {}", ROLES.join(", ")));
                 };
                 let role = role.to_owned();
@@ -553,7 +578,6 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_role;
     use crate::app::tests::{fake_app, key, settle, type_str};
     use crate::app::{App, Effect, Mode, ProfileInfo};
     use crate::resources::Kind;
@@ -664,15 +688,10 @@ mod tests {
         press(&mut app, KeyCode::Enter); // into ingest
         app.on_key(key(KeyCode::Char('n')));
         assert_eq!(app.prompt.as_ref().unwrap().title, "new … in ingest");
-        type_str(&mut app, "e");
-        let hint = &app.prompt.as_ref().unwrap().hint;
-        assert!(
-            hint.starts_with("Environment / Eventhouse / Eventstream"),
-            "{hint}"
-        );
-        app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.input, "e", "an ambiguous type waits for more");
-        ctrl(&mut app, 'u');
+        type_str(&mut app, "E");
+        app.on_key(key(KeyCode::Backspace));
+        let all = app.prompt.as_ref().unwrap().choices(&app.input).unwrap();
+        assert_eq!(all.len(), crate::resources::CREATABLE.len());
         type_str(&mut app, "lh");
         app.on_key(key(KeyCode::Enter));
         assert_eq!(
@@ -701,12 +720,24 @@ mod tests {
     }
 
     #[test]
-    fn tab_completes_the_type_and_type_views_skip_it() {
+    fn arrows_pick_among_filtered_types_and_type_views_skip_it() {
         let mut app = bronze();
         app.on_key(key(KeyCode::Char('n')));
-        type_str(&mut app, "eventh");
-        app.on_key(key(KeyCode::Tab));
-        assert_eq!(app.input, "Eventhouse");
+        type_str(&mut app, "e");
+        let p = app.prompt.as_ref().unwrap();
+        assert_eq!(
+            p.choices(&app.input).unwrap(),
+            ["Environment", "Eventhouse", "Eventstream"]
+        );
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down)); // wraps to the top
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            app.prompt.as_ref().unwrap().title,
+            "new Eventhouse in the workspace root"
+        );
         app.on_key(key(KeyCode::Esc));
 
         type_str(&mut app, ":nb");
@@ -775,9 +806,8 @@ mod tests {
         );
 
         app.on_key(key(KeyCode::Char('e')));
-        assert_eq!(app.input, "Admin");
-        ctrl(&mut app, 'u');
-        type_str(&mut app, "v");
+        assert_eq!(app.prompt.as_ref().unwrap().choice, 0, "starts on Admin");
+        app.on_key(key(KeyCode::Up)); // wraps to Viewer
         app.on_key(key(KeyCode::Enter));
         let a = acts(&mut app);
         assert!(matches!(&a[..], [Action::SetRole { role, .. }] if role == "Viewer"));
@@ -830,14 +860,5 @@ mod tests {
         assert_eq!(app.mode, Mode::Table);
         assert!(app.moving.is_none());
         assert!(app.status.as_ref().unwrap().text.contains("read-only"));
-    }
-
-    #[test]
-    fn roles_by_unique_prefix() {
-        assert_eq!(parse_role("v"), Some("Viewer"));
-        assert_eq!(parse_role("ADMIN"), Some("Admin"));
-        assert_eq!(parse_role(" co "), Some("Contributor"));
-        assert_eq!(parse_role(""), None);
-        assert_eq!(parse_role("owner"), None);
     }
 }

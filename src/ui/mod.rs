@@ -257,50 +257,81 @@ fn draw_confirm(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
     f.render_widget(Paragraph::new(lines).centered().block(block), area);
 }
 
-/// A typed prompt for a write: what enter does, the input, and a hint.
+/// A typed prompt for a write: what enter does, the input, a filtered list
+/// for prompts that pick from one, and a hint. The width never depends on
+/// what's typed; a list only changes the height, and the top edge stays put.
 fn draw_input(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
     let Some(p) = &app.prompt else {
         return;
     };
+    let all = p.all_choices().unwrap_or(&[]);
+    let choices = p.choices(&app.input);
     let widest = [
         p.title.chars().count(),
         p.hint.chars().count(),
-        app.input.chars().count() + 2,
+        all.iter().map(|c| c.len() + 4).max().unwrap_or(0),
     ]
     .into_iter()
     .max()
     .unwrap_or(0) as u16;
-    let w = (widest + 6).clamp(50, body.width);
-    let area = Rect::new(
-        body.x + (body.width - w) / 2,
-        body.y + body.height.saturating_sub(6) / 2,
-        w,
-        6.min(body.height),
-    );
-    let lines = vec![
-        Line::styled(
-            p.title.clone(),
-            Style::new().fg(t.text).add_modifier(Modifier::BOLD),
-        ),
-        Line::from(vec![
-            Span::styled("> ", Style::new().fg(t.accent)),
-            Span::styled(app.input.clone(), Style::new().fg(t.text)),
-        ]),
-        Line::styled(p.hint.clone(), Style::new().fg(t.dim)),
-        Line::styled(
-            format!("as {} ({})", app.profile.name, app.profile.account),
-            Style::new().fg(t.faint),
-        ),
-    ];
+    let w = (widest + 4).clamp(50, body.width);
+    // Four fixed lines plus the list, inside a border.
+    let rows = |n: usize| 6 + n.max(usize::from(choices.is_some())) as u16;
+    let tallest = rows(all.len()).min(body.height);
+    let y = body.y + (body.height - tallest) / 2;
+    let h = rows(choices.as_ref().map_or(0, Vec::len)).min(body.bottom() - y);
+    let area = Rect::new(body.x + (body.width - w) / 2, y, w, h);
+
     let (title, border) = match p.purpose {
         Purpose::Delete { .. } => (" delete ", t.bad),
         _ => (" write ", t.warn),
     };
     let block = overlay_block(title, t).border_style(Style::new().fg(border));
     let inner = block.inner(area);
+    // Long input scrolls: show its end.
+    let room = inner.width.saturating_sub(3) as usize;
+    let typed: String = {
+        let n = app.input.chars().count();
+        app.input.chars().skip(n.saturating_sub(room)).collect()
+    };
+    let mut lines = vec![
+        Line::styled(
+            p.title.clone(),
+            Style::new().fg(t.text).add_modifier(Modifier::BOLD),
+        ),
+        Line::from(vec![
+            Span::styled("> ", Style::new().fg(t.accent)),
+            Span::styled(typed.clone(), Style::new().fg(t.text)),
+        ]),
+    ];
+    if let Some(choices) = &choices {
+        if choices.is_empty() {
+            lines.push(Line::styled("  nothing matches", Style::new().fg(t.faint)));
+        }
+        let fit = (inner.height as usize).saturating_sub(4).max(1);
+        let skip = p.choice.saturating_sub(fit - 1);
+        for (i, c) in choices.iter().enumerate().skip(skip).take(fit) {
+            lines.push(if i == p.choice {
+                Line::styled(
+                    format!("▸ {c}"),
+                    Style::new()
+                        .fg(t.title)
+                        .bg(t.select_bg)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Line::styled(format!("  {c}"), Style::new().fg(t.text))
+            });
+        }
+    }
+    lines.push(Line::styled(p.hint.clone(), Style::new().fg(t.dim)));
+    lines.push(Line::styled(
+        format!("as {} ({})", app.profile.name, app.profile.account),
+        Style::new().fg(t.faint),
+    ));
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(lines).block(block), area);
-    let x = inner.x + 2 + app.input.chars().count() as u16;
+    let x = inner.x + 2 + typed.chars().count() as u16;
     f.set_cursor_position((x.min(inner.right().saturating_sub(1)), inner.y + 1));
 }
 
@@ -458,6 +489,24 @@ mod tests {
         ));
         type_str(&mut app, "transf");
         insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn snapshot_new_type_picker() {
+        let mut app = fake_app();
+        steps(&mut app, &[KeyCode::Char('j'), KeyCode::Enter]);
+        type_str(&mut app, "ne");
+        let before = render(&mut app);
+        type_str(&mut app, "v");
+        app.on_key(key(KeyCode::Down));
+        let after = render(&mut app);
+        let edges = |s: &str| -> Vec<(usize, usize)> {
+            s.lines()
+                .filter_map(|l| Some((l.find("╭ write")?, l.rfind('╮')?)))
+                .collect()
+        };
+        assert_eq!(edges(&before), edges(&after), "same width and top edge");
+        insta::assert_snapshot!(after);
     }
 
     #[test]
