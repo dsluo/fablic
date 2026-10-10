@@ -1,0 +1,26 @@
+---
+source: src/ui/mod.rs
+expression: render(&mut app)
+---
+"╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│Profile    fabric-admin                    <enter> items     <d> describe                 ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
+"│Account    admin01@fabric.contoso.example  <o> open          <esc> back                   ├┤ ├─┤├┴┐│  ││    │"
+"│Workspace  all                             <:> command       <ctrl-p> profile             └  ┴ ┴└─┘┴─┘┴└─┘  │"
+"│Resource   workspaces                      </> filter        <ctrl-r> refresh                               │"
+"│Count      3                               <?> help                                                         │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"╭──────────────────────────────────────────── workspaces(all)[3] ────────────────────────────────────────────╮"
+"│NAME           TYPE       CAPACITY   ID                                                                     │"
+"│Sandbox        Workspace  cap-trial  ws-3                                                                   │"
+"│Urban1 Bronze  Workspace  Prod F64   ws-1                                                                   │"
+"│Urban2 Silver  ╭ profiles ──────────────────────────────────────────────────────────────────╮               │"
+"│               │● fabric-admin              admin01@fabric.contoso.example                  │               │"
+"│               │  00000000-1111-2222-3333…  00000000-1111-2222-3333-444444444444 [read-only]│               │"
+"│               │  devops1                   me@devops.example                               │               │"
+"│               ╰────────────────────────────────────────────────────────────────────────────╯               │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"all                                                                                                           "
+"? help  :q quit                                                                                               "

@@ -348,9 +348,30 @@ fn prompt_title(p: &Prompt, t: &Theme) -> Line<'static> {
     }
 }
 
+/// Widest a profile name gets in the picker; longer ones (e.g. a service
+/// principal named by its client id) end in `…`.
+const PROFILE_NAME_W: usize = 24;
+
 fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
+    let longest = |field: fn(&crate::app::ProfileInfo) -> &str| {
+        app.profiles
+            .iter()
+            .map(|p| field(p).chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let name_w = longest(|p| &p.name).min(PROFILE_NAME_W);
+    let ro = if app.profiles.iter().any(|p| p.readonly) {
+        " [read-only]".len()
+    } else {
+        0
+    };
+    // "● " + name + gap + account + tag, inside the border.
+    let fixed = 2 + name_w + 2 + ro;
+    let want = fixed + longest(|p| &p.account);
+    let w = (want as u16 + 2).clamp(40, body.width);
+    let account_w = (w as usize).saturating_sub(2 + fixed);
     let h = (app.profiles.len() as u16 + 2).min(body.height);
-    let w = 64.min(body.width);
     let area = Rect::new(
         body.x + (body.width - w) / 2,
         body.y + (body.height - h) / 2,
@@ -371,11 +392,14 @@ fn draw_profiles(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
             let mut spans = vec![
                 Span::styled(mark, base.fg(t.ok)),
                 Span::styled(
-                    format!("{:<16}", p.name),
+                    format!("{:<name_w$}  ", table::head(&p.name, name_w)),
                     base.fg(p.color.unwrap_or(t.accent))
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(p.account.clone(), base.fg(t.text)),
+                Span::styled(
+                    format!("{:<account_w$}", table::head(&p.account, account_w)),
+                    base.fg(t.text),
+                ),
             ];
             if p.readonly {
                 spans.push(Span::styled(" [read-only]", base.fg(t.bad)));
@@ -543,6 +567,35 @@ mod tests {
                 ("ingest", Some(Theme::MOCHA.accent))
             ]
         );
+    }
+
+    #[test]
+    fn snapshot_profile_picker_fits_long_names() {
+        use crate::app::ProfileInfo;
+        let p = |name: &str, account: &str, readonly| ProfileInfo {
+            name: name.into(),
+            account: account.into(),
+            readonly,
+            color: None,
+        };
+        let mut app = App::new(
+            vec![
+                p("fabric-admin", "admin01@fabric.contoso.example", false),
+                p(
+                    "00000000-1111-2222-3333-444444444444",
+                    "00000000-1111-2222-3333-444444444444",
+                    true,
+                ),
+                p("devops1", "me@devops.example", false),
+            ],
+            0,
+        );
+        settle(&mut app);
+        app.on_key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('p'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        insta::assert_snapshot!(render(&mut app));
     }
 
     #[test]

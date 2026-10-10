@@ -164,7 +164,7 @@ fn column_widths(app: &App, columns: &[&str], avail: usize) -> Vec<usize> {
 }
 
 /// Text cut to `width` with a trailing `…`, so a cut is visible.
-fn head(s: &str, width: usize) -> String {
+pub(super) fn head(s: &str, width: usize) -> String {
     if s.chars().count() <= width || width == 0 {
         return s.to_owned();
     }
