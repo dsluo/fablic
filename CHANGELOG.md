@@ -1,5 +1,8 @@
 # Changelog
 
+Release Please maintains this file from Conventional Commits when preparing a
+release PR.
+
 ## 0.1.0 (2026-10-10)
 
 
@@ -16,7 +19,6 @@
 * **auth:** sign in through the browser by default ([725e395](https://github.com/dsluo/fablic/commit/725e3959817030d6f128a18a0b49cbaa2768de52))
 * **auth:** treat az service principals as such ([358dd02](https://github.com/dsluo/fablic/commit/358dd023e5d99e01211ba3c714803c616766c8e1))
 * **config:** unnamed profiles and bare login/logout use "default" ([a17445d](https://github.com/dsluo/fablic/commit/a17445de1d4e0ae25a9ad4750d2857d8162603d6))
-* **fake:** a fuller fake tenant that writes change ([4237b32](https://github.com/dsluo/fablic/commit/4237b322850b5618f2b8b4515f3de5fd97ce7a6f))
 * **fake:** a fuller fake tenant that writes change ([76b7406](https://github.com/dsluo/fablic/commit/76b74068c76501930d7100a322364179d8c3110e))
 * **jobs:** add job runs, schedules, and confirmed run/cancel ([6f62678](https://github.com/dsluo/fablic/commit/6f62678047cf12045d8c5531a256180e8b81a8e1))
 * **jobs:** reason column and one workspace-wide Spark session lookup ([ee993db](https://github.com/dsluo/fablic/commit/ee993db6ae1b2045693b9fc813353380164bc235))
@@ -55,7 +57,6 @@
 
 ### Continuous Integration
 
-* **release:** automate release PRs and binary publishing ([c60ede2](https://github.com/dsluo/fablic/commit/c60ede2c9c55432d23ecdb82c79b97c47f557c79))
 * **release:** automate release PRs and binary publishing ([505fb8e](https://github.com/dsluo/fablic/commit/505fb8ece65f71a3e512aea18ad6014ab6835a36))
 
 
@@ -64,8 +65,3 @@
 * **ai:** make CLAUDE.md a symlink to AGENTS.md ([5568b05](https://github.com/dsluo/fablic/commit/5568b058a92a452dd0019d89c79f27844d2aad2a))
 * **mise:** load .env into the environment ([2531db4](https://github.com/dsluo/fablic/commit/2531db48ecd112826d37be223fb91f24bc08650d))
 * scaffold Rust project with mise tooling ([951cf7f](https://github.com/dsluo/fablic/commit/951cf7f2ff8dd5e00ddf6065f20d7d1c0a6e931c))
-
-## Changelog
-
-Release Please maintains this file from Conventional Commits when preparing a
-release PR.
