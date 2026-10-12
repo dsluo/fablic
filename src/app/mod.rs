@@ -439,7 +439,7 @@ impl App {
     pub fn apply_filter(&mut self) {
         let keep = self.selected_row().map(|r| r.id.clone());
         let filter = Filter::parse(&self.frame.filter).unwrap_or(Filter::All);
-        self.view = filter.apply(&self.rows);
+        self.view = filter.apply_with(&self.rows, |r| self.parameters_text(r));
         let pos = keep
             .and_then(|id| self.view.iter().position(|&i| self.rows[i].id == id))
             .unwrap_or(self.frame.selected);

@@ -44,19 +44,25 @@ impl Filter {
         Ok(Filter::Substr(alts, invert))
     }
 
-    /// Indices of rows that pass, in their original order.
-    pub fn apply(&self, rows: &[Row]) -> Vec<usize> {
+    /// Indices of rows that pass, in their original order. `extra` is text
+    /// the app shows for a row that isn't one of its cells (pipeline run
+    /// parameters), matched along with them.
+    pub fn apply_with(&self, rows: &[Row], extra: impl Fn(&Row) -> String) -> Vec<usize> {
         let mut matcher = Matcher::new(Config::DEFAULT);
         let mut buf = Vec::new();
         rows.iter()
             .enumerate()
-            .filter(|(_, r)| self.matches(r, &mut matcher, &mut buf))
+            .filter(|(_, r)| self.matches(r, &extra(r), &mut matcher, &mut buf))
             .map(|(i, _)| i)
             .collect()
     }
 
-    fn matches(&self, row: &Row, m: &mut Matcher, buf: &mut Vec<char>) -> bool {
-        let hay = row.cells.join(" ");
+    fn matches(&self, row: &Row, extra: &str, m: &mut Matcher, buf: &mut Vec<char>) -> bool {
+        let mut hay = row.cells.join(" ");
+        if !extra.is_empty() {
+            hay.push(' ');
+            hay.push_str(extra);
+        }
         match self {
             Filter::All => true,
             Filter::Substr(alts, inv) => {
@@ -89,7 +95,9 @@ mod tests {
     }
 
     fn run(f: &str) -> Vec<usize> {
-        Filter::parse(f).unwrap().apply(&rows())
+        Filter::parse(f)
+            .unwrap()
+            .apply_with(&rows(), |_| String::new())
     }
 
     #[test]
@@ -97,6 +105,19 @@ mod tests {
         assert_eq!(run(""), vec![0, 1, 2]);
         assert_eq!(run("NOTEBOOK"), vec![0]);
         assert_eq!(run("lake|pipe"), vec![1, 2]);
+    }
+
+    #[test]
+    fn extra_text_is_searched_too() {
+        let f = Filter::parse("orders").unwrap();
+        assert!(f.apply_with(&rows(), |_| String::new()).is_empty());
+        let extra = |r: &Row| match r.id.as_str() {
+            "load_all" => "source_name=orders".to_owned(),
+            _ => String::new(),
+        };
+        assert_eq!(f.apply_with(&rows(), extra), vec![2]);
+        let f = Filter::parse("/name=ord/").unwrap();
+        assert_eq!(f.apply_with(&rows(), extra), vec![2]);
     }
 
     #[test]

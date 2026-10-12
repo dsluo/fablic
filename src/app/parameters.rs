@@ -28,6 +28,10 @@ impl App {
     /// `P`: show or hide the PARAMETERS column (and fetch what's missing).
     pub(super) fn toggle_parameters(&mut self) {
         self.params_on = !self.params_on;
+        // Loaded parameters are searched only while shown.
+        if !self.frame.filter.is_empty() {
+            self.apply_filter();
+        }
         if self.params_on {
             self.flash(
                 Level::Info,
@@ -96,6 +100,10 @@ impl App {
         };
         let current = profile == self.profile.account;
         self.params.insert((profile, run.clone()), params);
+        // A filter may match the new text.
+        if current && !self.frame.filter.is_empty() {
+            self.apply_filter();
+        }
         if current && self.mode == Mode::Detail && self.detail.run.as_deref() == Some(&run) {
             self.detail.lines = self.run_detail_lines(&run);
         }
@@ -117,6 +125,15 @@ impl App {
             Some(Params::Loading) => SPINNER[self.spinner % SPINNER.len()].to_owned(),
             Some(Params::Failed(_)) => "(failed; see describe)".into(),
             Some(Params::Ready(v)) => inline(v),
+        }
+    }
+
+    /// What the filter searches besides a row's cells: its loaded
+    /// parameters, while the column is shown.
+    pub fn parameters_text(&self, row: &Row) -> String {
+        match self.parameters_of(row) {
+            Some(Params::Ready(v)) if self.show_parameters() => inline(v),
+            _ => String::new(),
         }
     }
 
@@ -279,11 +296,32 @@ mod tests {
     }
 
     #[test]
+    fn the_filter_searches_loaded_parameters() {
+        let mut app = workspace_jobs();
+        type_str(&mut app, "/load_mode=full");
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.view.is_empty(), "off: parameters aren't searched");
+
+        // Answers arriving re-run the filter.
+        app.on_key(key(KeyCode::Char('P')));
+        settle(&mut app);
+        assert!(!app.view.is_empty());
+        for &i in &app.view {
+            assert!(app.parameters_cell(&app.rows[i]).contains("load_mode=full"));
+        }
+
+        // Hidden again: not searched.
+        app.on_key(key(KeyCode::Char('P')));
+        assert!(app.view.is_empty());
+    }
+
+    #[test]
     fn a_failed_lookup_says_so() {
         let mut app = workspace_jobs();
         app.on_key(key(KeyCode::Char('P')));
         let row = pipeline_row(&app);
         let account = app.profile.account.clone();
+        assert_eq!(app.parameters_text(&row), "", "nothing to search yet");
         app.on_msg(Msg::Parameters {
             profile: account,
             run: row.id.clone(),
