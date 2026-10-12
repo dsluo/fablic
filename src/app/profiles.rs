@@ -78,6 +78,7 @@ impl App {
                 title: format!("sign in {}", p.name),
                 lines: hint.lines().map(str::to_owned).collect(),
                 scroll: 0,
+                run: None,
             };
             self.mode = Mode::Detail;
             return;

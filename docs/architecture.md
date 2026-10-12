@@ -96,6 +96,7 @@ That split gives fablic three properties it depends on:
 | `src/fabric/client.rs` | Fabric REST client: auth, paging, 429/503 retry, long-running operations |
 | `src/fabric/onelake.rs` | OneLake DFS (files) and table metadata API |
 | `src/fabric/graph.rs` | Microsoft Graph lookups to resolve role principals |
+| `src/fabric/pipeline.rs` | Pipeline run parameters through undocumented Power BI endpoints (opt-in) |
 | `src/fabric/rows.rs` | Pure functions turning API JSON into `Row`s, plus formatting helpers |
 | `src/fabric/fake/` | `FakeSource` and its fixture data |
 | `src/auth/` | `TokenProvider` trait, `AzCli` provider, environment service principals, `fablic login` |
@@ -203,6 +204,7 @@ touching the terminal.
 | `Check { profile, fresh }` | `DataSource::warm` (optionally after `forget`) | `Msg::Auth` |
 | `Login { profile }` | event loop (az) or `DataSource::sign_in` | `Msg::LoggedIn` |
 | `RenameProfile { .. }` | `config::rename` | `Msg::Status` |
+| `Parameters { profile, workspace, run }` | `DataSource::run_parameters` | `Msg::Parameters` |
 | `Open(url)` | `open::that_detached` | nothing |
 
 ### Stale responses and caching
@@ -302,7 +304,7 @@ formatting code.
 ## The Fabric source
 
 `FabricSource` (`src/fabric/mod.rs`) wraps an `Arc<Inner>` holding three HTTP
-clients and two caches. All three clients share the profile's
+clients (plus `PipelineRuns`, idle until asked) and two caches. All three clients share the profile's
 `TokenProvider` and ask it for a token of the right audience.
 
 ### `Client`: Fabric REST (`src/fabric/client.rs`)
@@ -341,6 +343,32 @@ typed into a principal id and type: an object id via `directoryObjects`, an
 email via `users/{upn}` with a fallback search on `mail` (guests' UPNs differ
 from their email), or an exact group / service principal display name.
 Ambiguous or missing matches are reported instead of guessed.
+
+### `PipelineRuns` (`src/fabric/pipeline.rs`)
+
+Used only after `P` turns parameters on in a jobs view. Fabric's job
+instances don't record the parameters a pipeline run was started with, so
+this follows the Fabric web app through undocumented endpoints:
+
+1. `PUT api.powerbi.com/spglobalservice/GetOrInsertClusterUrisByTenantLocation`
+   (Power BI audience) gives the tenant's cluster (`FixedClusterUri`), cached
+   for the session.
+2. `POST {cluster}/metadata/v201606/generatemwctoken` for the `DI` workload,
+   the workspace and its capacity gives an MWC token and the capacity's
+   workload host, cached per workspace for 30 minutes and renewed on a 401.
+3. `GET {host}/webapi/capacities/{capacity}/workloads/DI/DiService/direct/workspaces/{ws}/pipelineruns/{run}`
+   with `Authorization: MwcToken …` returns the run, including `parameters`.
+
+There is no list endpoint, so each pipeline run costs a request; a semaphore
+keeps 4 in flight. Fetching the jobs list never waits on this: the rows arrive
+with `Msg::Rows`, then the app (`src/app/parameters.rs`) queues one
+`Effect::Parameters` per started pipeline run it doesn't know yet, answered by
+`Msg::Parameters`. Answers are kept per profile and run id in `App::params`
+(`Loading`, `Ready`, `Failed`), so live refreshes don't ask again. The table
+adds the PARAMETERS column while the toggle is on and shows a spinner in cells
+still loading; the event loop redraws every 100 ms only while one is. Describe
+on a job run is the run's JSON as YAML, unchanged, then `---` and the
+parameters, and it fills in if they arrive while it's open.
 
 ### Caching and fan-out
 

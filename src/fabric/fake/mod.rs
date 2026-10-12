@@ -472,6 +472,10 @@ impl DataSource for FakeSource {
         Box::pin(async move { rows })
     }
 
+    fn run_parameters(&self, _ws: String, run: String) -> BoxFuture<'static, Result<Value>> {
+        Box::pin(async move { Ok(data::run_parameters(&run)) })
+    }
+
     fn preview(
         &self,
         _ws: String,

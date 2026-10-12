@@ -341,6 +341,13 @@ pub trait DataSource: Send + Sync {
     /// Carry out a write. Returns a short result for the status line.
     fn act(&self, action: Action) -> BoxFuture<'static, Result<String>>;
 
+    /// The parameters a pipeline run was started with, as a JSON object.
+    fn run_parameters(
+        &self,
+        workspace: String,
+        run: String,
+    ) -> BoxFuture<'static, Result<serde_json::Value>>;
+
     /// Drop cached credentials, e.g. after signing in again.
     fn forget(&self) {}
 

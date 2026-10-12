@@ -59,6 +59,7 @@ impl App {
             title: title.clone(),
             lines: vec!["loading…".into()],
             scroll: 0,
+            run: None,
         };
         self.mode = Mode::Detail;
         self.effects.push(Effect::Detail {

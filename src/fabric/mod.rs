@@ -4,6 +4,7 @@ pub mod client;
 pub mod fake;
 pub mod graph;
 pub mod onelake;
+pub mod pipeline;
 pub mod rows;
 
 use std::collections::HashMap;
@@ -23,6 +24,7 @@ use crate::source::{Action, DataSource, Movable, PREVIEW_BYTES, Part, Query, tab
 pub use client::Client;
 use graph::Graph;
 use onelake::OneLake;
+use pipeline::PipelineRuns;
 use rows::WsData;
 
 /// How long a workspace's folder/item listing is reused while navigating its tree.
@@ -51,6 +53,8 @@ struct Inner {
     tokens: Arc<dyn TokenProvider>,
     spaces: Mutex<HashMap<String, (Instant, Arc<WsData>)>>,
     capacities: Cached<Vec<Value>>,
+    /// Pipeline run parameters; idle until the app asks.
+    pipelines: PipelineRuns,
 }
 
 impl FabricSource {
@@ -69,6 +73,7 @@ impl FabricSource {
         graph: Graph,
         tokens: Arc<dyn TokenProvider>,
     ) -> FabricSource {
+        let pipelines = PipelineRuns::new(tokens.clone(), client.clone());
         FabricSource {
             inner: Arc::new(Inner {
                 client,
@@ -77,8 +82,17 @@ impl FabricSource {
                 tokens,
                 spaces: Mutex::new(HashMap::new()),
                 capacities: Arc::default(),
+                pipelines,
             }),
         }
+    }
+
+    #[cfg(test)]
+    fn with_pipeline_runs(mut self, runs: PipelineRuns) -> FabricSource {
+        Arc::get_mut(&mut self.inner)
+            .expect("not shared yet")
+            .pipelines = runs;
+        self
     }
 }
 
@@ -578,6 +592,11 @@ impl DataSource for FabricSource {
         Box::pin(async move { inner.act(action).await })
     }
 
+    fn run_parameters(&self, ws: String, run: String) -> BoxFuture<'static, Result<Value>> {
+        let inner = self.inner.clone();
+        Box::pin(async move { inner.pipelines.parameters(&ws, &run).await })
+    }
+
     fn forget(&self) {
         self.inner.tokens.forget();
     }
@@ -695,6 +714,63 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].cells[0], "load");
         assert_eq!(rows[0].cells[5], "5m00s");
+    }
+
+    #[tokio::test]
+    async fn pipeline_run_parameters_come_from_the_workload() {
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        Mock::given(path("/workspaces/w1/folders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": []})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/workspaces/w1/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"id": "pl", "displayName": "orchestrate", "type": "DataPipeline"}
+            ]})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/workspaces/w1/items/pl/jobs/instances"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"id": "r1", "jobType": "Pipeline", "status": "Completed",
+                 "startTimeUtc": "2026-10-09T01:00:00", "endTimeUtc": "2026-10-09T01:05:00"}
+            ]})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/workspaces/w1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"capacityId": "c1"})))
+            .mount(&server)
+            .await;
+        Mock::given(path(
+            "/spglobalservice/GetOrInsertClusterUrisByTenantLocation",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"FixedClusterUri": uri})))
+        .mount(&server)
+        .await;
+        Mock::given(path("/metadata/v201606/generatemwctoken"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"Token": "mwc", "TargetUriHost": uri})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path(
+            "/webapi/capacities/C1/workloads/DI/DiService/direct/workspaces/w1/pipelineruns/r1",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parameters": {"source_name": "orders", "feed_id": "7"}
+        })))
+        .mount(&server)
+        .await;
+        let tokens: Arc<dyn TokenProvider> = Arc::new(StaticToken);
+        let runs = PipelineRuns::with_discovery(
+            tokens.clone(),
+            Client::with_base(tokens, uri.clone()),
+            uri,
+        );
+        let src = source(&server).await.with_pipeline_runs(runs);
+        let got = src.run_parameters("w1".into(), "r1".into()).await.unwrap();
+        assert_eq!(got, json!({"source_name": "orders", "feed_id": "7"}));
     }
 
     #[tokio::test]

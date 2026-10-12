@@ -47,9 +47,27 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
         return;
     }
 
-    let columns = Kind::columns_for(q);
+    let mut columns: Vec<&str> = Kind::columns_for(q).to_vec();
+    let params = app.show_parameters();
+    if params {
+        columns.push("PARAMETERS");
+    }
+    // Each shown row's cell texts, with the parameters cell when it's on.
+    let texts: Vec<Vec<String>> = app
+        .view
+        .iter()
+        .map(|&i| {
+            let r = &app.rows[i];
+            let mut cells = r.cells.clone();
+            if params {
+                cells.resize(columns.len() - 1, String::new());
+                cells.push(app.parameters_cell(r));
+            }
+            cells
+        })
+        .collect();
     let avail = area.width.saturating_sub(2) as usize;
-    let mut widths = column_widths(app, columns, avail);
+    let mut widths = column_widths(&texts, &columns, avail);
     // The last column takes whatever is left over.
     if let Some((last, others)) = widths.split_last_mut() {
         let used = others.iter().sum::<usize>() + 2 * others.len();
@@ -60,7 +78,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             .iter()
             .map(|c| Cell::from(*c).style(Style::new().fg(t.dim).add_modifier(Modifier::BOLD))),
     );
-    let rows = app.view.iter().map(|&i| {
+    let rows = app.view.iter().zip(&texts).map(|(&i, cells)| {
         let r = &app.rows[i];
         let color = match r.health {
             _ if r.dir => t.accent,
@@ -70,8 +88,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             Health::Bad => t.bad,
             Health::Neutral => t.text,
         };
-        let cells = r
-            .cells
+        let cells = cells
             .iter()
             .enumerate()
             .map(|(c, text)| match columns.get(c) {
@@ -147,12 +164,12 @@ fn fit_widths(desired: &[usize], columns: &[&str], avail: usize) -> Vec<usize> {
 }
 
 /// Each column as wide as its widest cell (capped), shrunk to fit `avail`.
-fn column_widths(app: &App, columns: &[&str], avail: usize) -> Vec<usize> {
+fn column_widths(texts: &[Vec<String>], columns: &[&str], avail: usize) -> Vec<usize> {
     let desired: Vec<usize> = (0..columns.len())
         .map(|c| {
-            app.view
+            texts
                 .iter()
-                .filter_map(|&i| app.rows[i].cells.get(c))
+                .filter_map(|cells| cells.get(c))
                 .map(|s| s.chars().count())
                 .chain(std::iter::once(columns[c].len()))
                 .max()

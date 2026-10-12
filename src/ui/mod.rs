@@ -184,6 +184,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("o", "open in the Fabric portal"),
     ("r", "run the item (asks first)"),
     ("ctrl-k", "cancel the selected run (asks first)"),
+    ("P", "in jobs: pipeline run parameters on/off"),
     ("s", "schedules; in OneLake, a table's schema"),
     ("e / E", "rename; change a role / edit description"),
     ("ctrl-d", "delete (items and folders: type the name)"),

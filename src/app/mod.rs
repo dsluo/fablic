@@ -6,6 +6,7 @@ mod command;
 mod jobs;
 mod navigation;
 mod onelake;
+mod parameters;
 mod profiles;
 mod writes;
 
@@ -21,6 +22,7 @@ use crate::resources::{Health, Kind, Row};
 use crate::source::{Action, Part, Query, Scope};
 
 pub use command::Suggestion;
+pub use parameters::Params;
 pub use writes::{Moving, Prompt, Purpose};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +91,12 @@ pub enum Effect {
         profile: String,
         name: String,
     },
+    /// Look up what a pipeline run was started with.
+    Parameters {
+        profile: String,
+        workspace: String,
+        run: String,
+    },
 }
 
 /// What the detail view should show once fetched.
@@ -137,6 +145,12 @@ pub enum Msg {
         profile: String,
         result: Result<(), String>,
     },
+    /// The answer to `Parameters`.
+    Parameters {
+        profile: String,
+        run: String,
+        result: Result<serde_json::Value, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +172,8 @@ pub struct Detail {
     pub title: String,
     pub lines: Vec<String>,
     pub scroll: usize,
+    /// The job run described, so its parameters can fill in when they arrive.
+    pub run: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -248,6 +264,12 @@ pub struct App {
     pub quit: bool,
     /// Rows of the body area at the last draw, for page up/down.
     pub page: usize,
+    /// `P`: pipeline run parameters on.
+    pub params_on: bool,
+    /// Parameters by (profile account, run id); kept across refreshes.
+    pub params: HashMap<(String, String), Params>,
+    /// Spinner frame, advanced while something animates.
+    pub spinner: usize,
     effects: Vec<Effect>,
     generation: u64,
     fetched_at: Option<Instant>,
@@ -285,6 +307,9 @@ impl App {
             live_until: None,
             quit: false,
             page: 20,
+            params_on: false,
+            params: HashMap::new(),
+            spinner: 0,
             effects: Vec::new(),
             generation: 0,
             fetched_at: None,
@@ -323,6 +348,7 @@ impl App {
             Some(rows) => {
                 self.rows = rows.clone();
                 self.apply_filter();
+                self.want_parameters();
             }
             None => {
                 self.rows.clear();
@@ -359,6 +385,7 @@ impl App {
                         self.cache.insert(key, rows.clone());
                         self.rows = rows;
                         self.apply_filter();
+                        self.want_parameters();
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -390,6 +417,11 @@ impl App {
                 },
             ),
             Msg::LoggedIn { profile, result } => self.on_logged_in(&profile, result),
+            Msg::Parameters {
+                profile,
+                run,
+                result,
+            } => self.on_parameters(profile, run, result),
         }
     }
 
@@ -468,6 +500,7 @@ impl App {
             (KeyCode::Char('y'), false) => self.definition(),
             (KeyCode::Char('o'), false) => self.open_in_browser(),
             (KeyCode::Char('F'), false) => self.toggle_flat(),
+            (KeyCode::Char('P'), false) => self.toggle_parameters(),
             (KeyCode::Char('r'), false) => self.run_job(),
             (KeyCode::Char('k'), true) => self.cancel_job(),
             (KeyCode::Char('s'), false) if self.kind() == Kind::OneLake => self.schema(),
@@ -549,11 +582,19 @@ impl App {
         let Some(row) = self.selected_row() else {
             return;
         };
-        let body = serde_yaml::to_string(&row.raw).unwrap_or_else(|e| e.to_string());
+        let title = format!("{} › {}", self.kind().name(), row.name);
+        let (lines, run) = if self.kind() == Kind::Jobs {
+            let id = row.id.clone();
+            (self.run_detail_lines(&id), Some(id))
+        } else {
+            let body = serde_yaml::to_string(&row.raw).unwrap_or_else(|e| e.to_string());
+            (body.lines().map(str::to_owned).collect(), None)
+        };
         self.detail = Detail {
-            title: format!("{} › {}", self.kind().name(), row.name),
-            lines: body.lines().map(str::to_owned).collect(),
+            title,
+            lines,
             scroll: 0,
+            run,
         };
         self.mode = Mode::Detail;
     }

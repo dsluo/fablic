@@ -160,6 +160,21 @@ pub async fn perform(effect: Effect, sources: &Sources, ctx: &Ctx) -> Option<Msg
             },
             None => Msg::Status(Level::Info, format!("renamed to {name} (not saved)")),
         }),
+        Effect::Parameters {
+            profile,
+            workspace,
+            run,
+        } => {
+            let result = match source(&profile) {
+                Ok(s) => s.run_parameters(workspace, run.clone()).await.map_err(err),
+                Err(e) => Err(e),
+            };
+            Some(Msg::Parameters {
+                profile,
+                run,
+                result,
+            })
+        }
         Effect::Open(url) => {
             if ctx.open_urls
                 && let Err(e) = open::that_detached(&url)

@@ -100,6 +100,7 @@ color = "#89b4fa"
 | `/` | filter: text, `a\|b`, `/regex/`, `~fuzzy`, `!` to invert |
 | `enter` / `esc` | drill in (lakehouses open in OneLake; files preview) / clear filter, then go back |
 | `F` | flatten workspace folders: every item below, with its folder path |
+| `P` | in a jobs view: show pipeline run parameters (see below) |
 | `d` / `y` | describe as YAML / item definition (notebook source, pipeline JSON) |
 | `o` | open in the Fabric portal |
 | `r` / `ctrl-k` | run the item / cancel the selected run (both ask first; blocked on read-only profiles) |
@@ -115,6 +116,15 @@ color = "#89b4fa"
 
 Every write (runs, cancels, renames, deletes, moves, role changes) is blocked on read-only
 profiles and recorded in `~/.local/state/fablic/journal.log`.
+
+### Pipeline run parameters
+
+Fabric's public API doesn't say what parameters a pipeline run was started
+with. `P` in a jobs view adds a PARAMETERS column and fetches them the way the
+Fabric web app does, through undocumented Power BI endpoints that may change or
+break without notice. The runs show straight away and each run's parameters
+fill in as they arrive. Describe (`d`) on a pipeline run shows the run, then a
+`---` and its parameters. It is off each time fablic starts.
 
 ## Development
 

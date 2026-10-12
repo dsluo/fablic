@@ -14,6 +14,8 @@ pub const FABRIC: &str = "https://api.fabric.microsoft.com";
 pub const STORAGE: &str = "https://storage.azure.com";
 /// Microsoft Graph, for turning an email or group name into an object id.
 pub const GRAPH: &str = "https://graph.microsoft.com";
+/// The Power BI service, which hands out workload tokens (pipeline run parameters).
+pub const POWERBI: &str = "https://analysis.windows.net/powerbi/api";
 
 pub trait TokenProvider: Send + Sync {
     /// A bearer token for `resource` that is valid for at least a few more minutes.

@@ -301,6 +301,8 @@ async fn run(
     // Dropped while az login has the terminal, so it doesn't eat keys meant for az.
     let mut events = Some(EventStream::new());
     let mut tick = tokio::time::interval(Duration::from_secs(1));
+    // Spinner frames, only while something is loading.
+    let mut frame = tokio::time::interval(Duration::from_millis(100));
     let ctx = Arc::new(Ctx {
         open_urls: true,
         journal_dir: config::state_dir(),
@@ -363,6 +365,7 @@ async fn run(
             },
             Some(msg) = rx.recv() => app.on_msg(msg),
             _ = tick.tick() => app.on_tick(),
+            _ = frame.tick(), if app.animating() => app.on_frame(),
         }
     }
 }

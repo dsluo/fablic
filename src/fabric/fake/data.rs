@@ -596,6 +596,21 @@ fn failed(mut run: Value, code: &str, message: &str) -> Value {
     run
 }
 
+/// What a pipeline run (`<item>-<n>`) was started with.
+pub fn run_parameters(run: &str) -> Value {
+    let n: u32 = run
+        .rsplit('-')
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    let mode = if n.is_multiple_of(2) {
+        "full"
+    } else {
+        "incremental"
+    };
+    json!({"source_name": "orders", "load_mode": mode})
+}
+
 /// Job history of an item, newest first.
 pub fn runs(item: &str, job_type: &str) -> Vec<Value> {
     let r = |n, status, invoke, start| run(item, n, job_type, status, invoke, start);
