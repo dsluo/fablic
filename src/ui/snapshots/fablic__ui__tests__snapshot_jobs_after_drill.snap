@@ -3,11 +3,11 @@ source: src/ui/mod.rs
 expression: render(&mut app)
 ---
 "╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│Profile    fake                         <enter> details   </> filter                      ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
-"│Account    me@example.com               <r> run again     <?> help                        ├┤ ├─┤├┴┐│  ││    │"
-"│Workspace  Urban1 Bronze                <ctrl-k> cancel   <d> describe                    └  ┴ ┴└─┘┴─┘┴└─┘  │"
-"│Resource   jobs                         <s> schedules     <esc> back                                        │"
-"│Count      3                            <:> command       <ctrl-p> profile                                  │"
+"│Profile    fake                         <enter> details   <:> command                     ┌─┐┌─┐┌┐ ┬  ┬┌─┐  │"
+"│Account    me@example.com               <r> run again     </> filter                      ├┤ ├─┤├┴┐│  ││    │"
+"│Workspace  Urban1 Bronze                <ctrl-k> cancel   <?> help                        └  ┴ ┴└─┘┴─┘┴└─┘  │"
+"│Resource   jobs                         <P> parameters    <d> describe                                      │"
+"│Count      3                            <s> schedules     <esc> back                                        │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭───────────────────────────── jobs(Urban1 Bronze › load_all (DataPipeline))[3] ─────────────────────────────╮"
 "│STATUS      JOB TYPE  INVOKED BY  START             DURATION  REASON                                        │"

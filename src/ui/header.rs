@@ -39,6 +39,7 @@ pub fn hints(kind: Kind) -> Vec<(&'static str, &'static str)> {
             ("enter", "details"),
             ("r", "run again"),
             ("ctrl-k", "cancel"),
+            ("P", "parameters"),
             ("s", "schedules"),
         ],
         Kind::Schedules => &[("r", "run now")],
