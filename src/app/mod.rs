@@ -515,6 +515,7 @@ impl App {
             (KeyCode::Char('a'), false) => self.add_role(),
             (KeyCode::Char('p'), true) => self.open_profiles(),
             (KeyCode::Char('r'), true) => {
+                self.forget_failed_parameters();
                 self.refresh(true);
                 self.flash(Level::Info, "refreshing");
             }

@@ -109,6 +109,15 @@ impl App {
         }
     }
 
+    /// `ctrl-r`: let failed lookups be tried again when the rows come back.
+    /// Only a refresh asked for by hand, so live refreshes don't retry
+    /// every few seconds.
+    pub(super) fn forget_failed_parameters(&mut self) {
+        let account = &self.profile.account;
+        self.params
+            .retain(|(a, _), p| a != account || !matches!(p, Params::Failed(_)));
+    }
+
     /// The parameters known for `row`, if it's a run that has any.
     pub fn parameters_of(&self, row: &Row) -> Option<&Params> {
         if !has_parameters(row) {
@@ -191,7 +200,7 @@ mod tests {
     use super::*;
     use crate::app::Msg;
     use crate::app::tests::{fake_app, key, settle, type_str};
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// The fake tenant's Urban2 Silver workspace, which has notebooks and a pipeline.
     fn workspace_jobs() -> App {
@@ -322,11 +331,21 @@ mod tests {
         let row = pipeline_row(&app);
         let account = app.profile.account.clone();
         assert_eq!(app.parameters_text(&row), "", "nothing to search yet");
+        // The lookup's own answer first, so the failure below stays.
+        settle(&mut app);
         app.on_msg(Msg::Parameters {
             profile: account,
             run: row.id.clone(),
             result: Err("401 /metadata/v201606/generatemwctoken".into()),
         });
         assert_eq!(app.parameters_cell(&row), "(failed; see describe)");
+
+        // A live refresh leaves it; ctrl-r tries again.
+        app.refresh(true);
+        settle(&mut app);
+        assert_eq!(app.parameters_cell(&row), "(failed; see describe)");
+        app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        settle(&mut app);
+        assert!(app.parameters_cell(&row).contains("source_name=orders"));
     }
 }

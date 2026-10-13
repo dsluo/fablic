@@ -124,7 +124,8 @@ with. `P` in a jobs view adds a PARAMETERS column and fetches them the way the
 Fabric web app does, through undocumented Power BI endpoints that may change or
 break without notice. The runs show straight away and each run's parameters
 fill in as they arrive. Describe (`d`) on a pipeline run shows the run, then a
-`---` and its parameters. It is off each time fablic starts.
+`---` and its parameters. A lookup that failed is tried again on `ctrl-r`. It
+is off each time fablic starts.
 
 ## Development
 
