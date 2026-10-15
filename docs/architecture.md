@@ -289,8 +289,9 @@ across workspaces makes "all" active, and tenant-wide views leave it alone.
   highlighted row gives one, so `:capacities` then `:roles` stays put.
 - `1`..`9` (`switch_workspace`) show the same kind in a recent workspace when
   that kind can follow (items, roles, workspace jobs), and that workspace's
-  items otherwise; `0` lists across all workspaces. Each switch is pushed,
-  so `esc` walks back through them.
+  items otherwise; `0` lists across all workspaces, or on a view that is
+  already across all (workspaces, capacities, ...) stays and only makes
+  "all" active. Each switch is pushed, so `esc` walks back through them.
 - `:kind <name>` resolves the name against the cached workspace list and the
   recent ones (id, exact name, then a unique substring) and calls `goto_in`.
 - The header lists the recent workspaces as `<0> all`, `<1> ...` ahead of the

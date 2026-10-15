@@ -65,8 +65,16 @@ impl App {
         }
     }
 
-    /// `1`..`9`: this view in a recent workspace. `0`: across all of them.
+    /// `1`..`9`: this view in a recent workspace. `0`: across all of them;
+    /// views that aren't per workspace (the workspace list, capacities, ...)
+    /// are already across all, so they stay and only "all" becomes active.
     pub(super) fn switch_workspace(&mut self, n: usize) {
+        if n == 0 && self.kind().needs() == ScopeNeed::None {
+            if let Some(spaces) = self.spaces.get_mut(&self.profile.account) {
+                spaces.active = None;
+            }
+            return self.flash(Level::Info, "all workspaces");
+        }
         if n == 0 {
             return self.view_in(None);
         }
@@ -231,6 +239,22 @@ mod tests {
 
         press(&mut app, KeyCode::Char('9'));
         assert!(app.status.as_ref().unwrap().text.contains("nothing on 9"));
+    }
+
+    #[test]
+    fn zero_on_a_view_across_all_stays_there() {
+        let mut app = bronze_then_silver();
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.kind(), Kind::Workspaces);
+        let depth = app.stack.len();
+        press(&mut app, KeyCode::Char('0'));
+        assert_eq!(app.kind(), Kind::Workspaces);
+        assert_eq!(app.stack.len(), depth);
+        assert!(app.active_workspace().is_none());
+        // Jumps from here no longer fall back to Silver.
+        command(&mut app, ":capacities");
+        command(&mut app, ":items");
+        assert_eq!(workspace(&app), None);
     }
 
     #[test]
