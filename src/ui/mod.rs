@@ -178,7 +178,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("1-9 / 0", "this view in a recent workspace / all"),
     ("/", "filter: text, a|b, /re/, ~fuzzy, !invert"),
     ("enter", "drill in / open"),
-    ("esc", "clear filter, then go back"),
+    ("esc", "clear filter / type, then up a level"),
     ("d", "describe (raw object as YAML)"),
     ("y", "item definition (notebook source, ...)"),
     ("F", "flatten folders: every item below"),

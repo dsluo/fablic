@@ -82,7 +82,7 @@ That split gives fablic three properties it depends on:
 |---|---|
 | `src/main.rs` | CLI (`clap`), profile assembly, the event loop, terminal suspend/resume for `az login`, headless `--snapshot` mode |
 | `src/app/mod.rs` | `App` state, `Mode`, `Effect`, `Msg`, key dispatch, row cache, filter application |
-| `src/app/navigation.rs` | Drilling into rows, `:kind` jumps, the back stack, scope inference |
+| `src/app/navigation.rs` | Drilling into rows, `:kind` jumps, going up a level, scope inference |
 | `src/app/workspaces.rs` | The active workspace and recent ones (k9s-style namespaces), number-key switching, workspace names on the command line |
 | `src/app/command.rs` | The `:` command palette: candidates, fuzzy suggestions, command execution |
 | `src/app/actions.rs` | Per-row read actions: item definitions, open in portal, flatten folders |
@@ -185,7 +185,7 @@ touching the terminal.
 |---|---|
 | `mode: Mode` | Which input handler and overlay is active: `Table`, `Command`, `Filter`, `Detail`, `Help`, `Profiles`, `Confirm`, `Prompt` |
 | `frame: Frame` | The current view: its `Query`, filter text and cursor position |
-| `stack: Vec<Frame>` | Views to return to with `esc` |
+| `focus` | Row id to put the cursor on once the view's rows arrive (the row `esc` came up from) |
 | `rows`, `view` | Rows of the current query, and indices of those that pass the filter |
 | `cache` | `(account, Query) -> Vec<Row>`: last result for every view visited, per profile |
 | `generation` | Incremented on every fetch; responses carrying an older generation are dropped |
@@ -272,10 +272,18 @@ opens, and the `raw` JSON the row was built from. `d` (describe) renders
   rather than an error from the API. With no workspace in the view or the
   highlighted row, the active one applies (see below); `0` lists across
   every workspace.
-- **`back` (`esc`)** clears an active filter first, then pops the stack.
+- **`back` (`esc`)** clears an active filter first, then a type filter or
+  flattening, then goes one level up the hierarchy (`parent`): a OneLake
+  directory to its parent, any view of an item to the folder level that
+  lists it, a folder to its parent folder, and a workspace's views, lists
+  across workspaces and tenant-wide kinds to the workspace list. There is no
+  history stack: `esc` never returns to an unrelated earlier view. Parent
+  folders are found in cached rows (`parentFolderId` on folder rows,
+  `folderId` and `folderPath` on item rows); when they aren't cached, `esc`
+  goes to the workspace root. The cursor lands on the row it came up from.
 
-`push_query` refuses to stack a duplicate of the current view; repeating
-`:ws` on the workspaces list just forces a refresh.
+`push_query` treats the current view as a refresh: repeating `:ws` on the
+workspaces list forces one.
 
 ### The active workspace
 
@@ -293,8 +301,7 @@ across workspaces makes "all" active, and tenant-wide views leave it alone.
   that kind can follow (items, roles, workspace jobs), and that workspace's
   items otherwise; `0` lists across all workspaces, or on a view that is
   already across all (workspaces, capacities, ...) stays and only makes
-  "all" active. Each switch is pushed, so `esc` walks back through them; a
-  number for the view already on screen does nothing.
+  "all" active. A number for the view already on screen does nothing.
 - `:kind <name>` resolves the name against the cached workspace list and the
   recent ones (id, exact name, then a unique substring) and calls `goto_in`.
 - The header lists the recent workspaces as `<0> all`, `<1> ...` ahead of the

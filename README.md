@@ -99,7 +99,7 @@ color = "#89b4fa"
 | `:nb <workspace>` | a kind in one workspace, by name or part of one (`:ws <workspace>` opens it) |
 | `1`-`9` / `0` | this view in a recently used workspace / across all workspaces (`:nb` then `0`: notebooks everywhere) |
 | `/` | filter: text, `a\|b`, `/regex/`, `~fuzzy`, `!` to invert |
-| `enter` / `esc` | drill in (lakehouses open in OneLake; files preview) / clear filter, then go back |
+| `enter` / `esc` | drill in (lakehouses open in OneLake; files preview) / clear the filter, then a type filter or `F`, then go up a level (OneLake folder, item's folder, parent folder, workspace list) |
 | `F` | flatten workspace folders: every item below, with its folder path |
 | `d` / `y` | describe as YAML / item definition (notebook source, pipeline JSON) |
 | `o` | open in the Fabric portal |

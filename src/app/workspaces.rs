@@ -232,9 +232,9 @@ mod tests {
         app.on_key(key(KeyCode::Char('0')));
         assert!(app.take_effects().is_empty());
 
-        // Esc walks back through the switches.
+        // Up from a list across workspaces is the workspace list.
         press(&mut app, KeyCode::Esc);
-        assert_eq!(workspace(&app), Some("Urban1 Bronze"));
+        assert_eq!(app.kind(), Kind::Workspaces);
     }
 
     #[test]

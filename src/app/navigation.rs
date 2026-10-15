@@ -1,4 +1,4 @@
-//! Drilling into rows, jumping between kinds, and going back.
+//! Drilling into rows, jumping between kinds, and going up a level.
 
 use super::{App, Frame, Level, Mode};
 use crate::resources::{Kind, Row, ScopeNeed, has_onelake, job_type_for};
@@ -6,35 +6,130 @@ use crate::source::{ItemRef, Query, Ref, Scope};
 
 impl App {
     pub(super) fn push_query(&mut self, query: Query) {
+        self.mode = Mode::Table;
         if query == self.frame.query {
-            // `:ws` while already on workspaces: just refresh, don't stack a copy.
-            self.mode = Mode::Table;
+            // `:ws` while already on workspaces: just refresh.
             return self.refresh(true);
         }
-        let old = std::mem::replace(
-            &mut self.frame,
-            Frame {
-                query,
-                filter: String::new(),
-                selected: 0,
-            },
-        );
-        self.stack.push(old);
-        self.mode = Mode::Table;
+        self.show(query, None);
+    }
+
+    /// Make `query` the view, with the cursor on the row `focus` once it's listed.
+    fn show(&mut self, query: Query, focus: Option<String>) {
+        self.frame = Frame {
+            query,
+            filter: String::new(),
+            selected: 0,
+        };
+        self.focus = focus;
         self.load();
     }
 
-    /// Esc: clear an active filter first, otherwise pop back to the previous view.
+    /// Esc: clear the filter, then an item type or flattening, then go one
+    /// level up: OneLake path, item, folder, workspace, workspace list.
     pub fn back(&mut self) {
         if !self.frame.filter.is_empty() {
             self.frame.filter.clear();
             self.apply_filter();
             return;
         }
-        if let Some(prev) = self.stack.pop() {
-            self.frame = prev;
-            self.load();
+        let q = &self.frame.query;
+        if q.scope.workspace.is_some() && (q.item_type.is_some() || q.flat) {
+            self.frame.query.item_type = None;
+            self.frame.query.flat = false;
+            self.focus = self.selected_row().map(|r| r.id.clone());
+            return self.load();
         }
+        if let Some((query, focus)) = self.parent() {
+            self.show(query, focus);
+        }
+    }
+
+    /// The view one level up, and the row there that leads back here.
+    fn parent(&self) -> Option<(Query, Option<String>)> {
+        let scope = &self.frame.query.scope;
+        let items_in = |folder: Option<Ref>| {
+            Query::new(
+                Kind::Items,
+                Scope {
+                    workspace: scope.workspace.clone(),
+                    folder,
+                    ..Scope::default()
+                },
+            )
+        };
+        match (self.kind(), &scope.workspace, &scope.item, &scope.folder) {
+            (Kind::Workspaces, ..) => None,
+            (Kind::OneLake, ..) if scope.path.is_some() => {
+                let path = scope.path.clone().unwrap_or_default();
+                let up = Scope {
+                    path: path.rsplit_once('/').map(|(p, _)| p.to_owned()),
+                    ..scope.clone()
+                };
+                Some((Query::new(Kind::OneLake, up), Some(path)))
+            }
+            // An item's views: the folder level that lists it.
+            (_, Some(_), Some(item), _) => {
+                let folder = self
+                    .cached_item_row(&item.id)
+                    .and_then(|r| r.field("folderId"))
+                    .and_then(|id| self.cached_folder(id));
+                Some((items_in(folder), Some(item.id.clone())))
+            }
+            (Kind::Items, Some(_), None, Some(folder)) => {
+                let up = self
+                    .cached_item_row(&folder.id)
+                    .and_then(|r| r.field("parentFolderId"))
+                    .filter(|id| !id.is_empty())
+                    .map(|id| Ref {
+                        id: id.to_owned(),
+                        name: folder
+                            .name
+                            .rsplit_once('/')
+                            .map_or(String::new(), |(p, _)| p.to_owned()),
+                    });
+                Some((items_in(up), Some(folder.id.clone())))
+            }
+            // Workspace views, lists across workspaces and tenant-wide kinds.
+            (_, ws, ..) => Some((
+                Query::new(Kind::Workspaces, Scope::default()),
+                ws.as_ref().map(|w| w.id.clone()),
+            )),
+        }
+    }
+
+    /// A row from any items listing seen with this profile.
+    fn cached_item_row(&self, id: &str) -> Option<&Row> {
+        self.cache
+            .iter()
+            .filter(|((account, q), _)| *account == self.profile.account && q.kind == Kind::Items)
+            .flat_map(|(_, rows)| rows)
+            .find(|r| r.id == id)
+    }
+
+    /// A folder by id, named by its full path: from its own row, or from the
+    /// path a flattened item row records for it.
+    fn cached_folder(&self, id: &str) -> Option<Ref> {
+        if id.is_empty() {
+            return None;
+        }
+        let path = match self.cached_item_row(id) {
+            Some(row) => row.field("path").map(str::to_owned),
+            None => self
+                .cache
+                .iter()
+                .filter(|((account, q), _)| {
+                    *account == self.profile.account && q.kind == Kind::Items
+                })
+                .flat_map(|(_, rows)| rows)
+                .find(|r| r.field("folderId") == Some(id))
+                .and_then(|r| r.field("folderPath"))
+                .map(str::to_owned),
+        }?;
+        Some(Ref {
+            id: id.to_owned(),
+            name: path,
+        })
     }
 
     pub fn drill(&mut self) {
@@ -270,17 +365,79 @@ mod tests {
         assert_eq!(app.kind(), Kind::Jobs);
         assert_eq!(app.view.len(), 3);
 
-        for _ in 0..3 {
-            press(&mut app, KeyCode::Esc);
-        }
+        // Esc goes up a level each time, with the cursor on where it came from.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.frame.query.scope.label(),
+            "Urban1 Bronze › ingest › shop"
+        );
+        assert_eq!(app.selected_row().unwrap().name, "ingest_shop");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.frame.query.scope.label(), "Urban1 Bronze › ingest");
+        assert_eq!(app.selected_row().unwrap().name, "shop");
+        press(&mut app, KeyCode::Esc);
         assert_eq!(
             names(&app),
             ["ingest", "bronze_lh", "Finance Model", "transform_silver"]
         );
+        assert_eq!(app.selected_row().unwrap().name, "ingest");
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.kind(), Kind::Workspaces);
-        assert!(app.stack.is_empty());
         assert_eq!(app.selected_row().unwrap().name, "Urban1 Bronze");
+        // The top stays the top.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.kind(), Kind::Workspaces);
+    }
+
+    #[test]
+    fn esc_goes_up_not_back() {
+        let mut app = fake_app();
+        type_str(&mut app, ":nb");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('0'));
+        // ingest_shop sits in ingest/shop of Urban1 Bronze.
+        let at = names(&app).iter().position(|n| n == "ingest_shop").unwrap();
+        for _ in 0..at {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.kind(), Kind::Jobs);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.kind(), Kind::Items);
+        assert_eq!(
+            app.frame.query.scope.label(),
+            "Urban1 Bronze › ingest › shop"
+        );
+        assert_eq!(app.selected_row().unwrap().name, "ingest_shop");
+
+        // A type filter goes before the level does.
+        type_str(&mut app, ":nb");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        assert!(app.frame.query.item_type.is_none());
+        assert_eq!(app.kind(), Kind::Items);
+
+        // Tenant-wide views go up to the workspace list.
+        type_str(&mut app, ":capacities");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.kind(), Kind::Workspaces);
+    }
+
+    #[test]
+    fn onelake_goes_up_one_directory() {
+        let mut app = into_bronze();
+        press(&mut app, KeyCode::Char('j')); // bronze_lh
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter); // Files
+        assert_eq!(app.frame.query.scope.path.as_deref(), Some("Files"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.kind(), Kind::OneLake);
+        assert!(app.frame.query.scope.path.is_none());
+        assert_eq!(app.selected_row().unwrap().id, "Files");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.kind(), Kind::Items);
+        assert_eq!(app.selected_row().unwrap().name, "bronze_lh");
     }
 
     #[test]
