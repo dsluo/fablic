@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::navigation::{folder_ref, item_ref, workspace_of};
 use super::{App, Effect, Level, Mode};
-use crate::resources::{CREATABLE, Kind, creatable_matches};
+use crate::resources::{CREATABLE, Kind, creatable_matches, holds_data};
 use crate::source::{Action, ItemRef, Movable, ROLES, Ref};
 
 /// What a typed prompt is collecting.
@@ -273,17 +273,19 @@ impl App {
         }
     }
 
-    /// `ctrl-d`: delete. Items and folders need their name typed.
+    /// `ctrl-d`: delete. Items that hold data need their name typed; the
+    /// rest, folders included (Fabric only deletes empty ones), take a y.
     pub(super) fn delete(&mut self) {
         let scope = self.frame.query.scope.clone();
         match self.kind() {
             Kind::Items => {
                 if let Some((workspace, folder)) = self.selected_folder() {
-                    let name = folder.name.rsplit('/').next().unwrap_or("").to_owned();
-                    let action = Action::DeleteFolder { workspace, folder };
-                    return self.ask_delete(action, name);
+                    return self.confirm(Action::DeleteFolder { workspace, folder });
                 }
                 if let Some((workspace, item)) = self.selected_item() {
+                    if !holds_data(&item.item_type) {
+                        return self.confirm(Action::DeleteItem { workspace, item });
+                    }
                     let name = item.name.clone();
                     return self.ask_delete(Action::DeleteItem { workspace, item }, name);
                 }
@@ -676,17 +678,28 @@ mod tests {
     }
 
     #[test]
-    fn delete_needs_the_exact_name() {
+    fn deleting_data_needs_the_exact_name() {
         let mut app = bronze();
-        press(&mut app, KeyCode::Char('G'));
+        press(&mut app, KeyCode::Char('j')); // bronze_lh
         ctrl(&mut app, 'd');
         assert_eq!(app.mode, Mode::Prompt);
-        type_str(&mut app, "transform");
+        type_str(&mut app, "bronze");
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.mode, Mode::Prompt, "a partial name must not delete");
         assert!(acts(&mut app).is_empty());
-        type_str(&mut app, "_silver");
+        type_str(&mut app, "_lh");
         app.on_key(key(KeyCode::Enter));
+        let a = acts(&mut app);
+        assert!(matches!(&a[..], [Action::DeleteItem { item, .. }] if item.id == "it-2"));
+    }
+
+    #[test]
+    fn deleting_code_takes_a_y() {
+        let mut app = bronze();
+        press(&mut app, KeyCode::Char('G')); // transform_silver
+        ctrl(&mut app, 'd');
+        assert_eq!(app.mode, Mode::Confirm);
+        app.on_key(key(KeyCode::Char('y')));
         let a = acts(&mut app);
         assert!(matches!(&a[..], [Action::DeleteItem { item, .. }] if item.id == "it-5"));
     }
@@ -694,7 +707,8 @@ mod tests {
     #[test]
     fn esc_cancels_a_prompt() {
         let mut app = bronze();
-        ctrl(&mut app, 'd'); // the ingest folder
+        press(&mut app, KeyCode::Char('j')); // bronze_lh
+        ctrl(&mut app, 'd');
         app.on_key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Table);
         assert!(app.prompt.is_none());
@@ -706,8 +720,8 @@ mod tests {
     fn folders_delete_and_create_in_place() {
         let mut app = bronze();
         ctrl(&mut app, 'd');
-        type_str(&mut app, "ingest");
-        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Confirm);
+        app.on_key(key(KeyCode::Char('y')));
         let a = acts(&mut app);
         assert!(matches!(&a[..], [Action::DeleteFolder { folder, .. }] if folder.id == "f-1"));
 

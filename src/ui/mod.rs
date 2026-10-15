@@ -186,7 +186,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("ctrl-k", "cancel the selected run (asks first)"),
     ("s", "schedules; in OneLake, a table's schema"),
     ("e / E", "rename; change a role / edit description"),
-    ("ctrl-d", "delete (items and folders: type the name)"),
+    ("ctrl-d", "delete (data stores: type the name)"),
     ("n", "new item or folder here"),
     ("m then p", "pick up an item or folder, drop it here"),
     ("a", "in roles: give someone a role"),
@@ -573,13 +573,13 @@ mod tests {
         let mut app = fake_app();
         steps(
             &mut app,
-            &[KeyCode::Char('j'), KeyCode::Enter, KeyCode::Char('G')],
+            &[KeyCode::Char('j'), KeyCode::Enter, KeyCode::Char('j')],
         );
         app.on_key(crossterm::event::KeyEvent::new(
             KeyCode::Char('d'),
             crossterm::event::KeyModifiers::CONTROL,
         ));
-        type_str(&mut app, "transf");
+        type_str(&mut app, "bron");
         insta::assert_snapshot!(render(&mut app));
     }
 

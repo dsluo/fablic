@@ -238,6 +238,23 @@ pub fn has_onelake(item_type: &str) -> bool {
     )
 }
 
+/// Item types that store data, which a delete would lose for good. Deleting
+/// one of these needs its name typed; anything else takes a y.
+pub fn holds_data(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "Lakehouse"
+            | "Warehouse"
+            | "MirroredDatabase"
+            | "SQLDatabase"
+            | "CosmosDBDatabase"
+            | "Eventhouse"
+            | "KQLDatabase"
+            | "SemanticModel"
+            | "Datamart"
+    )
+}
+
 /// Coarse health of a row, used to colour it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Health {
