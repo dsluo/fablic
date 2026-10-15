@@ -1,0 +1,26 @@
+---
+source: src/ui/mod.rs
+expression: render(&mut app)
+---
+"╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│Profile    fake                         <0> all           <:> command       <ctrl-p> profile                │"
+"│Account    me@example.com               <1> Urban4 Archi… </> filter        <ctrl-r> refresh                │"
+"│Workspace  all                          <2> Urban1 Bronze <?> help                                          │"
+"│Resource   capacities                                     <d> describe                                      │"
+"│Count      3                                              <esc> back                                        │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"╭──────────────────────────────────────────── capacities(all)[3] ────────────────────────────────────────────╮"
+"│NAME      SKU  REGION       STATE         ID                                                                │"
+"│Prod F64  F64  East US 2    Active        cap-f64                                                           │"
+"│Dev F8    F8   West Europe  Paused        cap-f8                                                            │"
+"│Spare F2  F2   East US 2    Provisioning  cap-f2                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"all                                                                                                           "
+"? help  :q quit                                                                                               "

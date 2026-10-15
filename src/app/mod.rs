@@ -7,6 +7,7 @@ mod jobs;
 mod navigation;
 mod onelake;
 mod profiles;
+mod workspaces;
 mod writes;
 
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ use crate::resources::{Health, Kind, Row};
 use crate::source::{Action, Part, Query, Scope};
 
 pub use command::Suggestion;
+use workspaces::Spaces;
 pub use writes::{Moving, Prompt, Purpose};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,6 +254,8 @@ pub struct App {
     generation: u64,
     fetched_at: Option<Instant>,
     cache: HashMap<(String, Query), Vec<Row>>,
+    /// Active and recent workspaces, per profile account.
+    spaces: HashMap<String, Spaces>,
 }
 
 impl App {
@@ -289,6 +293,7 @@ impl App {
             generation: 0,
             fetched_at: None,
             cache: HashMap::new(),
+            spaces: HashMap::new(),
         };
         app.load();
         app.check_all();
@@ -318,10 +323,14 @@ impl App {
 
     /// Show cached rows for the current frame (if any) and fetch fresh ones.
     fn load(&mut self) {
+        self.follow_workspace();
         let key = (self.profile.account.clone(), self.frame.query.clone());
         match self.cache.get(&key) {
             Some(rows) => {
                 self.rows = rows.clone();
+                // The selection belongs to the view we left: restore this
+                // frame's cursor instead of looking that row up here.
+                self.table.select(None);
                 self.apply_filter();
             }
             None => {
@@ -358,6 +367,9 @@ impl App {
                         let key = (self.profile.account.clone(), self.frame.query.clone());
                         self.cache.insert(key, rows.clone());
                         self.rows = rows;
+                        if self.kind() == Kind::Workspaces {
+                            self.rename_known_workspaces();
+                        }
                         self.apply_filter();
                     }
                     Err(e) => self.error = Some(e),
@@ -471,7 +483,7 @@ impl App {
             (KeyCode::Char('r'), false) => self.run_job(),
             (KeyCode::Char('k'), true) => self.cancel_job(),
             (KeyCode::Char('s'), false) if self.kind() == Kind::OneLake => self.schema(),
-            (KeyCode::Char('s'), false) => self.goto(Kind::Schedules, None, false),
+            (KeyCode::Char('s'), false) => self.goto(Kind::Schedules, None),
             (KeyCode::Char('D'), false) => self.download(),
             (KeyCode::Char('e'), false) => self.rename(),
             (KeyCode::Char('E'), false) => self.edit_description(),
@@ -487,6 +499,9 @@ impl App {
             }
             (KeyCode::Char('e'), true) => self.compact = !self.compact,
             (KeyCode::Char('?'), false) => self.mode = Mode::Help,
+            (KeyCode::Char(c @ '0'..='9'), false) => {
+                self.switch_workspace(c as usize - '0' as usize)
+            }
             _ => {}
         }
     }

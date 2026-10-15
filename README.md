@@ -96,7 +96,8 @@ color = "#89b4fa"
 | Key | Does |
 |---|---|
 | `:` | command palette: `:ws`, `:items`, `:nb`, `:lakehouses`, `:capacities`, `:ctx`, `:q`, ... |
-| `:nb all` | a kind across every workspace |
+| `:nb <workspace>` | a kind in one workspace, by name or part of one (`:ws <workspace>` opens it) |
+| `1`-`9` / `0` | this view in a recently used workspace / across all workspaces (`:nb` then `0`: notebooks everywhere) |
 | `/` | filter: text, `a\|b`, `/regex/`, `~fuzzy`, `!` to invert |
 | `enter` / `esc` | drill in (lakehouses open in OneLake; files preview) / clear filter, then go back |
 | `F` | flatten workspace folders: every item below, with its folder path |

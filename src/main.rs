@@ -51,7 +51,7 @@ struct Args {
 
     /// Render one frame to stdout after replaying these steps, then exit.
     /// Steps are space separated: `:cmd`, `/filter`, or a key (enter esc j k g G d y F).
-    /// Quote a command with arguments: `':nb all'`.
+    /// Quote a command with arguments: `':nb sandbox'`.
     #[arg(long, value_name = "STEPS", allow_hyphen_values = true)]
     snapshot: Option<String>,
 
@@ -463,8 +463,8 @@ mod tests {
     #[test]
     fn steps_keep_quoted_commands_together() {
         assert_eq!(
-            super::split_steps("j ':nb all' enter"),
-            ["j", ":nb all", "enter"]
+            super::split_steps("j ':nb sandbox' enter"),
+            ["j", ":nb sandbox", "enter"]
         );
     }
 }

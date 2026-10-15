@@ -94,12 +94,14 @@ impl App {
 
     /// `:kind` jump. Keeps whatever scope still applies, and treats the selected
     /// workspace, folder or item as the scope when the target kind needs one.
-    /// `all` drops the scope for kinds that can list across workspaces.
-    pub fn goto(&mut self, kind: Kind, item_type: Option<&str>, all: bool) {
-        let scope = self.context_scope();
+    /// With neither, the active workspace; `0` makes that "all".
+    pub fn goto(&mut self, kind: Kind, item_type: Option<&str>) {
+        let mut scope = self.context_scope();
+        if scope.workspace.is_none() {
+            scope.workspace = self.active_workspace().cloned();
+        }
         let scope = match kind.needs() {
             ScopeNeed::None => Scope::default(),
-            ScopeNeed::Optional if all => Scope::default(),
             // Listing kinds search the folder being viewed, not a highlighted
             // subfolder; a highlighted workspace still picks the workspace.
             ScopeNeed::Optional => Scope {
@@ -132,6 +134,31 @@ impl App {
             },
         };
         let mut q = Query::new(kind, scope);
+        q.item_type = item_type.map(str::to_owned);
+        self.push_query(q);
+    }
+
+    /// `:kind <workspace>`: the kind in a workspace named on the command line.
+    pub fn goto_in(&mut self, kind: Kind, item_type: Option<&str>, ws: Ref) {
+        let kind = match kind.needs() {
+            ScopeNeed::Optional | ScopeNeed::Workspace | ScopeNeed::WorkspaceOrItem => kind,
+            // `:ws sales` opens the workspace, as enter on it would.
+            ScopeNeed::None if kind == Kind::Workspaces => Kind::Items,
+            ScopeNeed::None => {
+                return self.flash(
+                    Level::Warn,
+                    format!("{} are not per workspace", kind.name()),
+                );
+            }
+            ScopeNeed::Item => return self.need("an item", kind),
+        };
+        let mut q = Query::new(
+            kind,
+            Scope {
+                workspace: Some(ws),
+                ..Scope::default()
+            },
+        );
         q.item_type = item_type.map(str::to_owned);
         self.push_query(q);
     }
@@ -253,6 +280,7 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.kind(), Kind::Workspaces);
         assert!(app.stack.is_empty());
+        assert_eq!(app.selected_row().unwrap().name, "Urban1 Bronze");
     }
 
     #[test]
@@ -313,8 +341,9 @@ mod tests {
     #[test]
     fn items_all_lists_across_workspaces_and_drills_with_its_name() {
         let mut app = fake_app();
-        type_str(&mut app, ":nb all");
+        type_str(&mut app, ":nb");
         press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('0'));
         assert!(app.frame.query.scope.workspace.is_none());
         assert_eq!(app.rows[app.view[0]].cells[2], "Sandbox");
         press(&mut app, KeyCode::Enter);

@@ -158,9 +158,17 @@ impl App {
                 None => self.open_profiles(),
             },
             w => {
-                if let Some((kind, item_type)) = Kind::lookup(w) {
-                    let all = words.next() == Some("all");
-                    self.goto(kind, item_type, all);
+                let Some((kind, item_type)) = Kind::lookup(w) else {
+                    return;
+                };
+                // The rest as typed, so names with runs of spaces still match.
+                let rest = input.trim_start()[first.len()..].trim();
+                match rest {
+                    "" => self.goto(kind, item_type),
+                    name => match self.find_workspace(name) {
+                        Ok(ws) => self.goto_in(kind, item_type, ws),
+                        Err(e) => self.flash(Level::Error, e),
+                    },
                 }
             }
         }
