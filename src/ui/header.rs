@@ -30,7 +30,7 @@ pub fn hints(kind: Kind) -> Vec<(&'static str, &'static str)> {
             ("enter", "open"),
             ("y", "definition"),
             ("r", "run"),
-            ("F", "flatten"),
+            ("F/T", "flat/tree"),
             ("e", "rename"),
             ("m/p", "move"),
             ("ctrl-d", "delete"),
@@ -44,7 +44,12 @@ pub fn hints(kind: Kind) -> Vec<(&'static str, &'static str)> {
             ("s", "schedules"),
         ],
         Kind::Schedules => &[("r", "run now")],
-        Kind::OneLake => &[("enter", "open"), ("s", "table schema"), ("D", "download")],
+        Kind::OneLake => &[
+            ("enter", "open"),
+            ("s", "table schema"),
+            ("D", "download"),
+            ("T", "tree"),
+        ],
         _ => &[],
     };
     let global = [

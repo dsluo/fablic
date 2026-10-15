@@ -3,11 +3,11 @@ source: src/ui/mod.rs
 expression: render(&mut app)
 ---
 "╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│Profile    fake                         <0> all           <enter> open      <?> help                        │"
-"│Account    me@example.com               <1> Urban1 Bronze <s> table schema  <d> describe                    │"
-"│Workspace  Urban1 Bronze                                  <D> download      <esc> back                      │"
-"│Resource   onelake                                        <:> command       <ctrl-p> profile                │"
-"│Count      3                                              </> filter        <ctrl-r> refresh                │"
+"│Profile    fake                         <0> all           <enter> open      </> filter                      │"
+"│Account    me@example.com               <1> Urban1 Bronze <s> table schema  <?> help                        │"
+"│Workspace  Urban1 Bronze                                  <D> download      <d> describe                    │"
+"│Resource   onelake                                        <T> tree          <esc> back                      │"
+"│Count      3                                              <:> command       <ctrl-p> profile                │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭──────────────────────── onelake(Urban1 Bronze › bronze_lh (Lakehouse) › Files)[3] ─────────────────────────╮"
 "│NAME             KIND  SIZE    MODIFIED                                                                     │"

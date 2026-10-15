@@ -1,0 +1,26 @@
+---
+source: src/ui/mod.rs
+expression: render(&mut app)
+---
+"╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
+"│Profile    fake                         <0> all           <enter> open      <m/p> move                      │"
+"│Account    me@example.com               <1> Urban1 Bronze <y> definition    <ctrl-d> delete                 │"
+"│Workspace  Urban1 Bronze                                  <r> run           <:> command                     │"
+"│Resource   items                                          <F/T> flat/tree   </> filter                      │"
+"│Count      7                                              <e> rename        <?> help                        │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"╭───────────────────────────────────────── items(Urban1 Bronze)[7] ──────────────────────────────────────────╮"
+"│NAME               TYPE           DESCRIPTION           ID                                                  │"
+"│▾ ingest           Folder                               f-1                                                 │"
+"│├─ ▾ shop          Folder                               f-2                                                 │"
+"││  └─ ingest_shop  Notebook       Nightly shop extract  it-1                                                │"
+"│└─ load_all        DataPipeline   Orchestrates ingest   it-3                                                │"
+"│bronze_lh          Lakehouse                            it-2                                                │"
+"│Finance Model      SemanticModel                        it-4                                                │"
+"│transform_silver   Notebook                             it-5                                                │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"│                                                                                                            │"
+"╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+"Urban1 Bronze                                                                                                 "
+"showing everything below here as a tree                                                                       "

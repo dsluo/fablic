@@ -140,7 +140,9 @@ impl Inner {
             Kind::Items => match ws {
                 Some(id) => {
                     let data = self.workspace(id, force).await?;
-                    if q.is_flat() {
+                    if q.tree {
+                        rows::items_tree(&data, folder)
+                    } else if q.is_flat() {
                         rows::items_flat(&data, folder, q.item_type.as_deref())
                     } else {
                         rows::items_level(&data, folder)
@@ -196,7 +198,12 @@ impl Inner {
                 let ws = ws.context("OneLake needs a workspace")?;
                 let item = q.scope.item.as_ref().context("OneLake needs an item")?;
                 let dir = q.scope.path.as_deref().unwrap_or("");
-                rows::onelake(&self.lake.list(ws, &item.id, dir).await?, &item.id)
+                let paths = self.lake.list(ws, &item.id, dir, q.tree).await?;
+                if q.tree {
+                    rows::onelake_tree(&paths, &item.id, dir)
+                } else {
+                    rows::onelake(&paths, &item.id)
+                }
             }
             Kind::Shortcuts => {
                 let ws = ws.context("shortcuts need a workspace")?;

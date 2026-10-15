@@ -489,6 +489,7 @@ impl App {
             (KeyCode::Char('y'), false) => self.definition(),
             (KeyCode::Char('o'), false) => self.open_in_browser(),
             (KeyCode::Char('F'), false) => self.toggle_flat(),
+            (KeyCode::Char('T'), false) => self.toggle_tree(),
             (KeyCode::Char('r'), false) => self.run_job(),
             (KeyCode::Char('k'), true) => self.cancel_job(),
             (KeyCode::Char('s'), false) if self.kind() == Kind::OneLake => self.schema(),

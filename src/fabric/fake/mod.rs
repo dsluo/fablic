@@ -111,6 +111,7 @@ impl FakeSource {
         Ok(match q.kind {
             Kind::Workspaces => rows::workspaces(&data::workspaces(), &data::capacities()),
             Kind::Items => match ws {
+                Some(id) if q.tree => rows::items_tree(&space(id), folder),
                 Some(id) if q.is_flat() => {
                     rows::items_flat(&space(id), folder, q.item_type.as_deref())
                 }
@@ -161,7 +162,7 @@ impl FakeSource {
             }
             Kind::OneLake => {
                 let item = q.scope.item.as_ref().map(|i| i.id.as_str()).unwrap_or("");
-                onelake(item, q.scope.path.as_deref().unwrap_or(""))
+                onelake(item, q.scope.path.as_deref().unwrap_or(""), q.tree)
             }
             Kind::Shortcuts => {
                 let item = q.scope.item.as_ref().map(|i| i.id.as_str()).unwrap_or("");
@@ -448,22 +449,34 @@ fn move_to(space: &mut WsData, ws: &str, what: &Movable, to: Option<&Ref>) -> Re
     Ok(())
 }
 
-/// DFS-style listing of a directory in a fake lakehouse or warehouse.
-fn onelake(item: &str, dir: &str) -> Vec<Row> {
-    let paths: Vec<Value> = data::listing(item, dir)
-        .into_iter()
-        .map(|(name, is_dir, len)| {
-            let path = if dir.is_empty() {
-                name.to_owned()
-            } else {
-                format!("{dir}/{name}")
-            };
+/// DFS-style listing of a directory in a fake lakehouse or warehouse, or of
+/// everything below it as a tree.
+fn onelake(item: &str, dir: &str, tree: bool) -> Vec<Row> {
+    let mut paths = Vec::new();
+    list_onelake(item, dir, tree, &mut paths);
+    if tree {
+        rows::onelake_tree(&paths, item, dir)
+    } else {
+        rows::onelake(&paths, item)
+    }
+}
+
+fn list_onelake(item: &str, dir: &str, recursive: bool, out: &mut Vec<Value>) {
+    for (name, is_dir, len) in data::listing(item, dir) {
+        let path = if dir.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{dir}/{name}")
+        };
+        out.push(
             json!({"name": format!("{item}/{path}"), "isDirectory": is_dir.to_string(),
                    "contentLength": len.to_string(),
-                   "lastModified": "Fri, 09 Oct 2026 05:12:00 GMT"})
-        })
-        .collect();
-    rows::onelake(&paths, item)
+                   "lastModified": "Fri, 09 Oct 2026 05:12:00 GMT"}),
+        );
+        if recursive && is_dir {
+            list_onelake(item, &path, true, out);
+        }
+    }
 }
 
 impl DataSource for FakeSource {

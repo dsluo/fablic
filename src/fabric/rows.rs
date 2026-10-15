@@ -129,23 +129,96 @@ pub fn items_level(data: &WsData, folder: Option<&str>) -> Vec<Row> {
         .items
         .iter()
         .filter(|i| here(s(i, "folderId")))
-        .map(|i| {
-            Row::new(
-                s(i, "id"),
-                s(i, "displayName"),
-                vec![
-                    s(i, "displayName").into(),
-                    s(i, "type").into(),
-                    s(i, "description").into(),
-                    s(i, "id").into(),
-                ],
-            )
-            .raw(i.clone())
-        })
+        .map(item_row)
         .collect();
     items.sort_by_key(|r| r.name.to_lowercase());
     folders.extend(items);
     folders
+}
+
+fn item_row(i: &Value) -> Row {
+    Row::new(
+        s(i, "id"),
+        s(i, "displayName"),
+        vec![
+            s(i, "displayName").into(),
+            s(i, "type").into(),
+            s(i, "description").into(),
+            s(i, "id").into(),
+        ],
+    )
+    .raw(i.clone())
+}
+
+/// Every folder and item at or below `folder` as one tree: in each folder,
+/// subfolders first, then its items. Items are leaves.
+pub fn items_tree(data: &WsData, folder: Option<&str>) -> Vec<Row> {
+    let paths = data.folder_paths();
+    let mut folders: Vec<(Row, String)> = data
+        .folders
+        .iter()
+        .map(|f| {
+            let path = paths.get(s(f, "id")).map_or("", String::as_str);
+            (folder_row(f, path), s(f, "parentFolderId").to_owned())
+        })
+        .collect();
+    folders.sort_by_key(|(r, _)| r.name.to_lowercase());
+    let mut items: Vec<(Row, String)> = data
+        .items
+        .iter()
+        .map(|i| (item_row(i), s(i, "folderId").to_owned()))
+        .collect();
+    items.sort_by_key(|(r, _)| r.name.to_lowercase());
+    folders.extend(items);
+    tree(folders, folder.unwrap_or(""))
+}
+
+/// Lay out `(row, parent id)` pairs as the tree below `root`, depth first,
+/// keeping the given order among siblings. The first cell gets `├─` / `└─`
+/// guides, and a container with something under it turns from `▸` to `▾`.
+/// Rows that aren't below `root` are left out.
+pub fn tree(nodes: Vec<(Row, String)>, root: &str) -> Vec<Row> {
+    let mut children: HashMap<String, Vec<Row>> = HashMap::new();
+    for (row, parent) in nodes {
+        children.entry(parent).or_default().push(row);
+    }
+    let mut out = Vec::new();
+    branch(&mut children, root, None, &mut out);
+    out
+}
+
+/// The children of `parent`; `indent` is `None` for the top level, which
+/// gets no guides.
+fn branch(
+    children: &mut HashMap<String, Vec<Row>>,
+    parent: &str,
+    indent: Option<&str>,
+    out: &mut Vec<Row>,
+) {
+    // Taking each list out also ends a cycle in bad data.
+    let Some(rows) = children.remove(parent) else {
+        return;
+    };
+    let n = rows.len();
+    for (i, mut row) in rows.into_iter().enumerate() {
+        let last = i + 1 == n;
+        let (guide, below) = match indent {
+            None => (String::new(), String::new()),
+            Some(pre) if last => (format!("{pre}└─ "), format!("{pre}   ")),
+            Some(pre) => (format!("{pre}├─ "), format!("{pre}│  ")),
+        };
+        let open = children.contains_key(&row.id);
+        if let Some(first) = row.cells.first_mut() {
+            let name = match first.strip_prefix("▸ ") {
+                Some(name) if open => format!("▾ {name}"),
+                _ => first.clone(),
+            };
+            *first = format!("{guide}{name}");
+        }
+        let id = row.id.clone();
+        out.push(row);
+        branch(children, &id, Some(&below), out);
+    }
 }
 
 /// Every item at or below `folder`, with its folder path, optionally of one type.
@@ -578,6 +651,19 @@ pub fn onelake(paths: &[Value], item: &str) -> Vec<Row> {
     rows
 }
 
+/// A recursive OneLake listing below `dir` as a tree, directories first at
+/// every level.
+pub fn onelake_tree(paths: &[Value], item: &str, dir: &str) -> Vec<Row> {
+    let nodes = onelake(paths, item)
+        .into_iter()
+        .map(|r| {
+            let parent = r.id.rsplit_once('/').map_or("", |(p, _)| p).to_owned();
+            (r, parent)
+        })
+        .collect();
+    tree(nodes, dir)
+}
+
 /// Where a shortcut points, in one line.
 fn shortcut_target(t: &Value) -> (String, String) {
     let kind = s(t, "type").to_owned();
@@ -772,6 +858,28 @@ mod tests {
     }
 
     #[test]
+    fn tree_nests_folders_and_items() {
+        let d = data();
+        let cells =
+            |rows: &[Row]| -> Vec<String> { rows.iter().map(|r| r.cells[0].clone()).collect() };
+        assert_eq!(
+            cells(&items_tree(&d, None)),
+            [
+                "▾ archive",
+                "└─ old",
+                "▾ ingest",
+                "├─ ▾ shop",
+                "│  └─ extract",
+                "└─ load",
+                "readme",
+            ]
+        );
+        let below = items_tree(&d, Some("f1"));
+        assert_eq!(cells(&below), ["▾ shop", "└─ extract", "load"]);
+        assert_eq!(below[0].field("path"), Some("ingest/shop"));
+    }
+
+    #[test]
     fn flat_covers_subtree_and_type() {
         let d = data();
         assert_eq!(
@@ -868,6 +976,21 @@ mod tests {
         assert!(rows[0].dir);
         assert_eq!(rows[1].cells[..3], ["z.csv", "file", "1.5 KB"]);
         assert_eq!(rows[1].cells[3], "2025-10-27 13:53");
+    }
+
+    #[test]
+    fn onelake_tree_nests_below_the_directory() {
+        let p = |name: &str, dir: bool| json!({"name": format!("i/{name}"), "isDirectory": dir.to_string()});
+        let paths = [
+            p("Files/z.csv", false),
+            p("Files/raw", true),
+            p("Files/raw/a.json", false),
+            p("Files/empty", true),
+        ];
+        let rows = onelake_tree(&paths, "i", "Files");
+        let names: Vec<&str> = rows.iter().map(|r| r.cells[0].as_str()).collect();
+        assert_eq!(names, ["▸ empty", "▾ raw", "└─ a.json", "z.csv"]);
+        assert_eq!(rows[2].id, "Files/raw/a.json");
     }
 
     #[test]

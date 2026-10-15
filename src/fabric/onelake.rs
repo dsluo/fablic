@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use futures::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::RANGE;
@@ -18,6 +18,8 @@ use crate::auth::{STORAGE, TokenProvider};
 pub const DFS: &str = "https://onelake.dfs.fabric.microsoft.com";
 pub const TABLES: &str = "https://onelake.table.fabric.microsoft.com/delta";
 const VERSION: &str = "2023-11-03";
+/// Most entries a recursive listing (`T`) reads before giving up.
+const TREE_MAX: usize = 10_000;
 
 #[derive(Clone)]
 pub struct OneLake {
@@ -100,16 +102,23 @@ impl OneLake {
         })
     }
 
-    /// One directory level under an item. `dir` is relative to the item
-    /// (`""` for its root). Entry names come back as `{item}/{path}`.
-    pub async fn list(&self, ws: &str, item: &str, dir: &str) -> Result<Vec<Value>> {
+    /// One directory level under an item, or with `recursive` everything
+    /// below it. `dir` is relative to the item (`""` for its root). Entry
+    /// names come back as `{item}/{path}`.
+    pub async fn list(
+        &self,
+        ws: &str,
+        item: &str,
+        dir: &str,
+        recursive: bool,
+    ) -> Result<Vec<Value>> {
         let directory = if dir.is_empty() {
             item.to_owned()
         } else {
             format!("{item}/{dir}")
         };
         let base = format!(
-            "{}/{ws}?resource=filesystem&recursive=false&directory={}",
+            "{}/{ws}?resource=filesystem&recursive={recursive}&directory={}",
             self.dfs,
             urlencoding::encode(&directory)
         );
@@ -126,6 +135,13 @@ impl OneLake {
             let page: Value = resp.json().await?;
             if let Some(Value::Array(paths)) = page.get("paths") {
                 out.extend(paths.iter().cloned());
+            }
+            // Delta tables hold a file per commit and per part, so a tree
+            // of a whole lakehouse can run to millions.
+            if recursive && out.len() > TREE_MAX {
+                bail!(
+                    "more than {TREE_MAX} files below here: open a folder further down for a tree"
+                );
             }
             let body = page
                 .get("ContinuationToken")
@@ -217,7 +233,11 @@ mod tests {
             .up_to_n_times(1)
             .mount(&server)
             .await;
-        let got = lake(&server).await.list("w", "i", "Files").await.unwrap();
+        let got = lake(&server)
+            .await
+            .list("w", "i", "Files", false)
+            .await
+            .unwrap();
         let names: Vec<&str> = got.iter().map(|p| p["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["i/Files/a.csv", "i/Files/b.csv"]);
     }

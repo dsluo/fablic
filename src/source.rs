@@ -69,6 +69,9 @@ pub struct Query {
     pub item_type: Option<String>,
     /// List every item under the folder instead of one tree level.
     pub flat: bool,
+    /// Show everything below as one tree: a workspace's folders and items
+    /// (not what is inside the items), or an item's OneLake files.
+    pub tree: bool,
 }
 
 impl Query {
@@ -78,6 +81,7 @@ impl Query {
             scope,
             item_type: None,
             flat: false,
+            tree: false,
         }
     }
 

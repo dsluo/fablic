@@ -25,8 +25,8 @@ impl App {
         self.load();
     }
 
-    /// Esc: clear the filter, then an item type or flattening, then go one
-    /// level up: OneLake path, item, folder, workspace, workspace list.
+    /// Esc: clear the filter, then an item type, flattening or a tree, then go
+    /// one level up: OneLake path, item, folder, workspace, workspace list.
     pub fn back(&mut self) {
         if !self.frame.filter.is_empty() {
             self.frame.filter.clear();
@@ -34,9 +34,10 @@ impl App {
             return;
         }
         let q = &self.frame.query;
-        if q.scope.workspace.is_some() && (q.item_type.is_some() || q.flat) {
+        if q.tree || (q.scope.workspace.is_some() && (q.item_type.is_some() || q.flat)) {
             self.frame.query.item_type = None;
             self.frame.query.flat = false;
+            self.frame.query.tree = false;
             self.focus = self.selected_row().map(|r| r.id.clone());
             return self.load();
         }
@@ -452,6 +453,101 @@ mod tests {
         press(&mut app, KeyCode::Enter); // ingest/
         press(&mut app, KeyCode::Char('F'));
         assert_eq!(names(&app), ["load_all", "ingest_shop"]);
+    }
+
+    #[test]
+    fn tree_shows_folders_and_items_but_not_inside_items() {
+        let mut app = into_bronze();
+        press(&mut app, KeyCode::Char('T'));
+        assert!(app.frame.query.tree);
+        assert_eq!(
+            names(&app),
+            [
+                "ingest",
+                "shop",
+                "ingest_shop",
+                "load_all",
+                "bronze_lh",
+                "Finance Model",
+                "transform_silver"
+            ]
+        );
+        // The cursor stays on the folder it was on.
+        assert_eq!(app.selected_row().unwrap().name, "ingest");
+
+        // Items open as they do anywhere else, and esc comes back to the level.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.kind(), Kind::Jobs);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.frame.query.scope.label(),
+            "Urban1 Bronze › ingest › shop"
+        );
+
+        // On the tree, esc drops the tree before going up.
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.frame.query.tree);
+        assert_eq!(app.kind(), Kind::Items);
+
+        // F and T replace each other.
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Char('F'));
+        assert!(app.frame.query.flat && !app.frame.query.tree);
+        press(&mut app, KeyCode::Char('T'));
+        assert!(app.frame.query.tree && !app.frame.query.flat);
+    }
+
+    #[test]
+    fn tree_needs_one_workspace() {
+        let mut app = into_bronze();
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Char('0'));
+        assert!(app.frame.query.scope.workspace.is_none());
+        assert!(!app.frame.query.tree, "no tree across workspaces");
+        press(&mut app, KeyCode::Char('T'));
+        assert!(!app.frame.query.tree);
+        assert!(app.status.as_ref().unwrap().text.starts_with("T shows"));
+    }
+
+    #[test]
+    fn tree_inside_an_item_lists_its_files() {
+        let mut app = into_bronze();
+        press(&mut app, KeyCode::Char('j')); // bronze_lh
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('T'));
+        let cells: Vec<&str> = app
+            .view
+            .iter()
+            .map(|&i| app.rows[i].cells[0].as_str())
+            .collect();
+        assert_eq!(
+            cells,
+            [
+                "▾ Files",
+                "├─ ▾ raw",
+                "│  └─ events.json",
+                "├─ extract.parquet",
+                "└─ readme.txt",
+                "▾ Tables",
+                "├─ ▸ customers",
+                "└─ ▸ sales",
+            ]
+        );
+        // Files still preview, from anywhere in the tree.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Detail);
+        assert!(
+            app.detail.title.contains("Files/raw/events.json"),
+            "{}",
+            app.detail.title
+        );
     }
 
     #[test]
