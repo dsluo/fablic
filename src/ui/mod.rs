@@ -175,6 +175,8 @@ fn draw_palette(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
 pub const HELP: &[(&str, &str)] = &[
     (":", "command palette (kinds, :ctx, :q)"),
     (":nb all", "a kind across every workspace"),
+    (":nb <ws>", "a kind in a workspace (name or part)"),
+    ("1-9 / 0", "this view in a recent workspace / all"),
     ("/", "filter: text, a|b, /re/, ~fuzzy, !invert"),
     ("enter", "drill in / open"),
     ("esc", "clear filter, then go back"),
@@ -558,6 +560,23 @@ mod tests {
             KeyCode::Enter,
         ];
         steps(&mut app, &keys);
+        insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn snapshot_recent_workspaces() {
+        let mut app = fake_app();
+        let keys = [
+            KeyCode::Char('j'),
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Char('G'),
+            KeyCode::Enter,
+            KeyCode::Char(':'),
+        ];
+        steps(&mut app, &keys);
+        type_str(&mut app, "capacities");
+        steps(&mut app, &[KeyCode::Enter]);
         insta::assert_snapshot!(render(&mut app));
     }
 

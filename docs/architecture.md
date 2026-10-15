@@ -83,6 +83,7 @@ That split gives fablic three properties it depends on:
 | `src/main.rs` | CLI (`clap`), profile assembly, the event loop, terminal suspend/resume for `az login`, headless `--snapshot` mode |
 | `src/app/mod.rs` | `App` state, `Mode`, `Effect`, `Msg`, key dispatch, row cache, filter application |
 | `src/app/navigation.rs` | Drilling into rows, `:kind` jumps, the back stack, scope inference |
+| `src/app/workspaces.rs` | The active workspace and recent ones (k9s-style namespaces), number-key switching, workspace names on the command line |
 | `src/app/command.rs` | The `:` command palette: candidates, fuzzy suggestions, command execution |
 | `src/app/actions.rs` | Per-row read actions: item definitions, open in portal, flatten folders |
 | `src/app/jobs.rs` | Run and cancel jobs, plus the "watch" window after an action |
@@ -274,6 +275,26 @@ opens, and the `raw` JSON the row was built from. `d` (describe) renders
 
 `push_query` refuses to stack a duplicate of the current view; repeating
 `:ws` on the workspaces list just forces a refresh.
+
+### The active workspace
+
+Workspaces work like k9s namespaces (`src/app/workspaces.rs`). Each profile
+has an active workspace and a list of up to nine recent ones, kept in
+`App::spaces` by account. `load` calls `follow_workspace` on every view
+change: a view inside a workspace makes it active and adds it to the recent
+list (new ones go first, ones already listed keep their number), a list
+across workspaces makes "all" active, and tenant-wide views leave it alone.
+
+- `goto` falls back to the active workspace when neither the view nor the
+  highlighted row gives one, so `:capacities` then `:roles` stays put.
+- `1`..`9` (`switch_workspace`) show the same kind in a recent workspace when
+  that kind can follow (items, roles, workspace jobs), and that workspace's
+  items otherwise; `0` lists across all workspaces. Each switch is pushed,
+  so `esc` walks back through them.
+- `:kind <name>` resolves the name against the cached workspace list and the
+  recent ones (id, exact name, then a unique substring) and calls `goto_in`.
+- The header lists the recent workspaces as `<0> all`, `<1> ...` ahead of the
+  key hints. Fetching the workspace list picks up renames.
 
 ## The `DataSource` boundary
 

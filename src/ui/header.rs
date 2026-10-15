@@ -10,6 +10,8 @@ use crate::app::App;
 use crate::resources::Kind;
 use crate::theme::Theme;
 
+use super::table::head;
+
 const LOGO_W: u16 = 20;
 /// Width of one column of key hints.
 const HINT_W: u16 = 18;
@@ -57,6 +59,23 @@ pub fn hints(kind: Kind) -> Vec<(&'static str, &'static str)> {
     specific.iter().copied().chain(global).collect()
 }
 
+/// `<0> all` and `<1>`..`<9>` for recent workspaces, the active one brighter.
+/// Empty until a workspace has been opened.
+fn workspace_hints(app: &App, t: &Theme) -> Vec<Option<(String, String, Style)>> {
+    let recent = app.recent_workspaces();
+    if recent.is_empty() {
+        return Vec::new();
+    }
+    let active = app.active_workspace().map(|w| w.id.as_str());
+    let style = |on: bool| Style::new().fg(if on { t.text } else { t.dim });
+    let all = Some(("0".to_owned(), "all".to_owned(), style(active.is_none())));
+    let numbered = recent.iter().enumerate().map(|(i, ws)| {
+        let on = active == Some(ws.id.as_str());
+        Some(((i + 1).to_string(), ws.name.clone(), style(on)))
+    });
+    std::iter::once(all).chain(numbered).collect()
+}
+
 /// The header names only the workspace; the table title shows the full path.
 fn workspace(app: &App) -> String {
     match &app.frame.query.scope.workspace {
@@ -81,8 +100,23 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         .max()
         .unwrap_or(0) as u16;
     let info_w = (longest + 13).max(40).min(inner.width / 2);
+    // Hints fill fixed-width columns top to bottom. Recent workspaces come
+    // first, in columns of their own, like k9s namespaces.
+    let rows = inner.height.max(1) as usize;
+    let mut entries = workspace_hints(app, t);
+    if !entries.is_empty() {
+        entries.resize_with(entries.len().div_ceil(rows) * rows, || None);
+    }
+    let dim = Style::new().fg(t.dim);
+    let q = &app.frame.query;
+    entries.extend(
+        hints(q.kind)
+            .into_iter()
+            .map(|(k, d)| Some((k.to_owned(), d.to_owned(), dim))),
+    );
     // The logo goes first when space is short: hints matter more.
-    let logo_w = if inner.width.saturating_sub(info_w + LOGO_W) >= 2 * HINT_W {
+    let hint_cols = entries.len().div_ceil(rows).max(2) as u16;
+    let logo_w = if inner.width.saturating_sub(info_w + LOGO_W) >= hint_cols * HINT_W {
         LOGO_W
     } else {
         0
@@ -108,7 +142,6 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     if app.profile.readonly {
         profile.push(Span::styled(" [read-only]", Style::new().fg(t.bad)));
     }
-    let q = &app.frame.query;
     let resource = match &q.item_type {
         Some(ty) => format!("{} ({ty})", q.kind.name()),
         None => q.kind.name().to_owned(),
@@ -127,19 +160,22 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     ];
     f.render_widget(Paragraph::new(lines), info);
 
-    // Hints fill fixed-width columns top to bottom, as many columns as fit.
+    // As many hint columns as fit.
     let col_w = HINT_W;
-    let rows = keys.height.max(1) as usize;
     let cols = (keys.width / col_w).max(1) as usize;
     let mut grid: Vec<Vec<Span>> = vec![Vec::new(); rows];
-    for (i, (k, d)) in hints(q.kind).into_iter().take(rows * cols).enumerate() {
+    for (i, entry) in entries.into_iter().take(rows * cols).enumerate() {
         let line = &mut grid[i % rows];
-        line.push(Span::styled(format!("<{k}>"), Style::new().fg(t.key)));
+        let Some((k, d, style)) = entry else {
+            line.push(Span::raw(" ".repeat(col_w as usize)));
+            continue;
+        };
         let pad = (col_w as usize).saturating_sub(k.len() + 2);
-        line.push(Span::styled(
-            format!(" {d:<w$}", w = pad.saturating_sub(1)),
-            Style::new().fg(t.dim),
-        ));
+        let w = pad.saturating_sub(1);
+        line.push(Span::styled(format!("<{k}>"), Style::new().fg(t.key)));
+        // One cell short, so a long name never runs into the next column.
+        let d = head(&d, w.saturating_sub(1));
+        line.push(Span::styled(format!(" {d:<w$}"), style));
     }
     f.render_widget(
         Paragraph::new(grid.into_iter().map(Line::from).collect::<Vec<_>>()),

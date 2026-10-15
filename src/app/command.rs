@@ -158,9 +158,16 @@ impl App {
                 None => self.open_profiles(),
             },
             w => {
-                if let Some((kind, item_type)) = Kind::lookup(w) {
-                    let all = words.next() == Some("all");
-                    self.goto(kind, item_type, all);
+                let Some((kind, item_type)) = Kind::lookup(w) else {
+                    return;
+                };
+                match words.collect::<Vec<_>>().join(" ").as_str() {
+                    "" => self.goto(kind, item_type, false),
+                    "all" => self.goto(kind, item_type, true),
+                    name => match self.find_workspace(name) {
+                        Ok(ws) => self.goto_in(kind, item_type, ws),
+                        Err(e) => self.flash(Level::Error, e),
+                    },
                 }
             }
         }
