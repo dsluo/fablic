@@ -322,6 +322,9 @@ impl App {
         match self.cache.get(&key) {
             Some(rows) => {
                 self.rows = rows.clone();
+                // The selection belongs to the view we left: restore this
+                // frame's cursor instead of looking that row up here.
+                self.table.select(None);
                 self.apply_filter();
             }
             None => {

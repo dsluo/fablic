@@ -253,6 +253,7 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.kind(), Kind::Workspaces);
         assert!(app.stack.is_empty());
+        assert_eq!(app.selected_row().unwrap().name, "Urban1 Bronze");
     }
 
     #[test]
