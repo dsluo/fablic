@@ -162,7 +162,7 @@ impl App {
         }
         self.active = i;
         self.profile = self.profiles[i].clone();
-        self.stack.clear();
+        self.focus = None;
         self.frame = Frame {
             query: Query::new(Kind::Workspaces, Scope::default()),
             filter: String::new(),

@@ -220,7 +220,8 @@ const LIVE_REFRESH: Duration = Duration::from_secs(5);
 pub struct App {
     pub mode: Mode,
     pub frame: Frame,
-    pub stack: Vec<Frame>,
+    /// Row id to put the cursor on when the view's rows come in.
+    focus: Option<String>,
     pub rows: Vec<Row>,
     /// Indices into `rows` that pass the filter, in display order.
     pub view: Vec<usize>,
@@ -267,7 +268,7 @@ impl App {
                 filter: String::new(),
                 selected: 0,
             },
-            stack: Vec::new(),
+            focus: None,
             rows: Vec::new(),
             view: Vec::new(),
             table: TableState::default(),
@@ -371,6 +372,8 @@ impl App {
                             self.rename_known_workspaces();
                         }
                         self.apply_filter();
+                        // A row that isn't there anymore shouldn't grab the cursor later.
+                        self.focus = None;
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -417,7 +420,13 @@ impl App {
 
     /// Recompute `view` from the filter, keeping the cursor on the same row id if possible.
     pub fn apply_filter(&mut self) {
-        let keep = self.selected_row().map(|r| r.id.clone());
+        let keep = match self.focus.clone() {
+            Some(id) if self.rows.iter().any(|r| r.id == id) => {
+                self.focus = None;
+                Some(id)
+            }
+            _ => self.selected_row().map(|r| r.id.clone()),
+        };
         let filter = Filter::parse(&self.frame.filter).unwrap_or(Filter::All);
         self.view = filter.apply(&self.rows);
         let pos = keep
