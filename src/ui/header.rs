@@ -59,9 +59,12 @@ pub fn hints(kind: Kind) -> Vec<(&'static str, &'static str)> {
     specific.iter().copied().chain(global).collect()
 }
 
+/// One hint cell: key, description and style; `None` leaves the cell blank.
+type Entry = Option<(String, String, Style)>;
+
 /// `<0> all` and `<1>`..`<9>` for recent workspaces, the active one brighter.
 /// Empty until a workspace has been opened.
-fn workspace_hints(app: &App, t: &Theme) -> Vec<Option<(String, String, Style)>> {
+fn workspace_hints(app: &App, t: &Theme) -> Vec<Entry> {
     let recent = app.recent_workspaces();
     if recent.is_empty() {
         return Vec::new();
@@ -101,19 +104,25 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
         .unwrap_or(0) as u16;
     let info_w = (longest + 13).max(40).min(inner.width / 2);
     // Hints fill fixed-width columns top to bottom. Recent workspaces come
-    // first, in columns of their own, like k9s namespaces.
+    // first, in columns of their own like k9s namespaces, but key hints get
+    // the room first: workspaces take one column, more only if hints still fit.
     let rows = inner.height.max(1) as usize;
-    let mut entries = workspace_hints(app, t);
-    if !entries.is_empty() {
-        entries.resize_with(entries.len().div_ceil(rows) * rows, || None);
-    }
     let dim = Style::new().fg(t.dim);
     let q = &app.frame.query;
-    entries.extend(
-        hints(q.kind)
-            .into_iter()
-            .map(|(k, d)| Some((k.to_owned(), d.to_owned(), dim))),
-    );
+    let keys_hints: Vec<Entry> = hints(q.kind)
+        .into_iter()
+        .map(|(k, d)| Some((k.to_owned(), d.to_owned(), dim)))
+        .collect();
+    let key_cols = keys_hints.len().div_ceil(rows);
+    let room = (inner.width.saturating_sub(info_w) / HINT_W) as usize;
+    let mut entries = workspace_hints(app, t);
+    let ws_cols = entries
+        .len()
+        .div_ceil(rows)
+        .min(room.saturating_sub(key_cols).max(usize::from(room > 1)));
+    entries.truncate(ws_cols * rows);
+    entries.resize_with(ws_cols * rows, || None);
+    entries.extend(keys_hints);
     // The logo goes first when space is short: hints matter more.
     let hint_cols = entries.len().div_ceil(rows).max(2) as u16;
     let logo_w = if inner.width.saturating_sub(info_w + LOGO_W) >= hint_cols * HINT_W {

@@ -94,15 +94,14 @@ impl App {
 
     /// `:kind` jump. Keeps whatever scope still applies, and treats the selected
     /// workspace, folder or item as the scope when the target kind needs one.
-    /// `all` drops the scope for kinds that can list across workspaces.
-    pub fn goto(&mut self, kind: Kind, item_type: Option<&str>, all: bool) {
+    /// With neither, the active workspace; `0` makes that "all".
+    pub fn goto(&mut self, kind: Kind, item_type: Option<&str>) {
         let mut scope = self.context_scope();
         if scope.workspace.is_none() {
             scope.workspace = self.active_workspace().cloned();
         }
         let scope = match kind.needs() {
             ScopeNeed::None => Scope::default(),
-            ScopeNeed::Optional if all => Scope::default(),
             // Listing kinds search the folder being viewed, not a highlighted
             // subfolder; a highlighted workspace still picks the workspace.
             ScopeNeed::Optional => Scope {
@@ -342,8 +341,9 @@ mod tests {
     #[test]
     fn items_all_lists_across_workspaces_and_drills_with_its_name() {
         let mut app = fake_app();
-        type_str(&mut app, ":nb all");
+        type_str(&mut app, ":nb");
         press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('0'));
         assert!(app.frame.query.scope.workspace.is_none());
         assert_eq!(app.rows[app.view[0]].cells[2], "Sandbox");
         press(&mut app, KeyCode::Enter);

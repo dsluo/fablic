@@ -161,9 +161,10 @@ impl App {
                 let Some((kind, item_type)) = Kind::lookup(w) else {
                     return;
                 };
-                match words.collect::<Vec<_>>().join(" ").as_str() {
-                    "" => self.goto(kind, item_type, false),
-                    "all" => self.goto(kind, item_type, true),
+                // The rest as typed, so names with runs of spaces still match.
+                let rest = input.trim_start()[first.len()..].trim();
+                match rest {
+                    "" => self.goto(kind, item_type),
                     name => match self.find_workspace(name) {
                         Ok(ws) => self.goto_in(kind, item_type, ws),
                         Err(e) => self.flash(Level::Error, e),

@@ -483,7 +483,7 @@ impl App {
             (KeyCode::Char('r'), false) => self.run_job(),
             (KeyCode::Char('k'), true) => self.cancel_job(),
             (KeyCode::Char('s'), false) if self.kind() == Kind::OneLake => self.schema(),
-            (KeyCode::Char('s'), false) => self.goto(Kind::Schedules, None, false),
+            (KeyCode::Char('s'), false) => self.goto(Kind::Schedules, None),
             (KeyCode::Char('D'), false) => self.download(),
             (KeyCode::Char('e'), false) => self.rename(),
             (KeyCode::Char('E'), false) => self.edit_description(),

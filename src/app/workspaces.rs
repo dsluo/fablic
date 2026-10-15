@@ -13,7 +13,9 @@ const RECENT: usize = 9;
 pub struct Spaces {
     /// `None` means all workspaces.
     pub active: Option<Ref>,
-    /// Newest first. A workspace already listed keeps its number.
+    /// Newest first: opening a new workspace makes it `1` and moves the rest
+    /// down, dropping the oldest past nine. Opening one already listed
+    /// doesn't move it.
     pub recent: Vec<Ref>,
 }
 
@@ -42,12 +44,11 @@ impl App {
         };
         let spaces = self.spaces.entry(self.profile.account.clone()).or_default();
         if let Some(ws) = &ws {
-            match spaces.recent.iter_mut().find(|r| r.id == ws.id) {
-                Some(known) => known.name = ws.name.clone(),
-                None => {
-                    spaces.recent.insert(0, ws.clone());
-                    spaces.recent.truncate(RECENT);
-                }
+            // Names of listed ones come from the workspace list only: a view's
+            // scope may hold a name from before a rename.
+            if !spaces.recent.iter().any(|r| r.id == ws.id) {
+                spaces.recent.insert(0, ws.clone());
+                spaces.recent.truncate(RECENT);
             }
         }
         spaces.active = ws;
@@ -103,7 +104,10 @@ impl App {
         } else {
             Query::new(Kind::Items, scope)
         };
-        self.push_query(next);
+        // Already there: nothing to do (ctrl-r refreshes).
+        if next != self.frame.query {
+            self.push_query(next);
+        }
     }
 
     /// A workspace named on the command line: its id, its exact name (any
@@ -223,6 +227,11 @@ mod tests {
         assert_eq!(workspace(&app), None);
         assert!(app.active_workspace().is_none());
 
+        // Pressing where you already are does nothing: no refetch.
+        app.take_effects();
+        app.on_key(key(KeyCode::Char('0')));
+        assert!(app.take_effects().is_empty());
+
         // Esc walks back through the switches.
         press(&mut app, KeyCode::Esc);
         assert_eq!(workspace(&app), Some("Urban1 Bronze"));
@@ -246,10 +255,8 @@ mod tests {
         let mut app = bronze_then_silver();
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.kind(), Kind::Workspaces);
-        let depth = app.stack.len();
         press(&mut app, KeyCode::Char('0'));
         assert_eq!(app.kind(), Kind::Workspaces);
-        assert_eq!(app.stack.len(), depth);
         assert!(app.active_workspace().is_none());
         // Jumps from here no longer fall back to Silver.
         command(&mut app, ":capacities");
@@ -265,17 +272,37 @@ mod tests {
         assert_eq!(app.kind(), Kind::Roles);
         assert_eq!(workspace(&app), Some("Urban2 Silver"));
 
-        // `all` sticks, like k9s.
-        command(&mut app, ":nb all");
+        // All workspaces (`0`) sticks, like k9s.
+        command(&mut app, ":nb");
+        press(&mut app, KeyCode::Char('0'));
         command(&mut app, ":capacities");
         command(&mut app, ":items");
         assert_eq!(workspace(&app), None);
     }
 
     #[test]
+    fn all_is_just_a_name() {
+        let mut app = bronze_then_silver();
+        command(&mut app, ":capacities");
+        command(&mut app, ":roles all");
+        assert_eq!(app.kind(), Kind::Capacities);
+        let status = &app.status.as_ref().unwrap().text;
+        assert_eq!(status, "no workspace matches all");
+    }
+
+    #[test]
+    fn the_list_names_workspaces_not_old_views() {
+        let mut app = bronze_then_silver();
+        // A view still holding a name from before a rename.
+        app.frame.query.scope.workspace.as_mut().unwrap().name = "Old Silver".into();
+        app.follow_workspace();
+        assert_eq!(recent(&app), ["Urban2 Silver", "Urban1 Bronze"]);
+    }
+
+    #[test]
     fn commands_take_a_workspace_name() {
         let mut app = fake_app();
-        command(&mut app, ":nb urban1 bronze");
+        command(&mut app, ":nb   urban1 bronze  ");
         assert_eq!(app.frame.query.item_type.as_deref(), Some("Notebook"));
         assert_eq!(workspace(&app), Some("Urban1 Bronze"));
 

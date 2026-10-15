@@ -174,7 +174,6 @@ fn draw_palette(f: &mut Frame, body: Rect, app: &App, t: &Theme) {
 
 pub const HELP: &[(&str, &str)] = &[
     (":", "command palette (kinds, :ctx, :q)"),
-    (":nb all", "a kind across every workspace"),
     (":nb <ws>", "a kind in a workspace (name or part)"),
     ("1-9 / 0", "this view in a recent workspace / all"),
     ("/", "filter: text, a|b, /re/, ~fuzzy, !invert"),
@@ -578,6 +577,26 @@ mod tests {
         type_str(&mut app, "capacities");
         steps(&mut app, &[KeyCode::Enter]);
         insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn many_recent_workspaces_leave_room_for_key_hints() {
+        let mut app = fake_app();
+        // Open all five workspaces.
+        for i in 0..5 {
+            let mut keys = vec![KeyCode::Char('g')];
+            keys.extend(std::iter::repeat_n(KeyCode::Char('j'), i));
+            keys.extend([KeyCode::Enter, KeyCode::Esc, KeyCode::Esc]);
+            steps(&mut app, &keys);
+        }
+        steps(&mut app, &[KeyCode::Char('1')]);
+        let screen = render(&mut app);
+        assert!(screen.contains("<4>"), "{screen}");
+        assert!(
+            !screen.contains("<5>"),
+            "one column of workspaces: {screen}"
+        );
+        assert!(screen.contains("<ctrl-d> delete"), "{screen}");
     }
 
     #[test]

@@ -269,8 +269,9 @@ opens, and the `raw` JSON the row was built from. `d` (describe) renders
   applies. `context_scope` narrows the current scope using the highlighted
   row, so `:jobs` on a highlighted notebook opens that notebook's runs.
   Kinds that need scope the user has not provided are refused with a hint
-  rather than an error from the API. `:nb all` drops the scope to list
-  across every workspace.
+  rather than an error from the API. With no workspace in the view or the
+  highlighted row, the active one applies (see below); `0` lists across
+  every workspace.
 - **`back` (`esc`)** clears an active filter first, then pops the stack.
 
 `push_query` refuses to stack a duplicate of the current view; repeating
@@ -282,7 +283,8 @@ Workspaces work like k9s namespaces (`src/app/workspaces.rs`). Each profile
 has an active workspace and a list of up to nine recent ones, kept in
 `App::spaces` by account. `load` calls `follow_workspace` on every view
 change: a view inside a workspace makes it active and adds it to the recent
-list (new ones go first, ones already listed keep their number), a list
+list (new ones go first and move the rest down; ones already listed don't
+move, and keep the name the workspace list last gave them), a list
 across workspaces makes "all" active, and tenant-wide views leave it alone.
 
 - `goto` falls back to the active workspace when neither the view nor the
@@ -291,11 +293,13 @@ across workspaces makes "all" active, and tenant-wide views leave it alone.
   that kind can follow (items, roles, workspace jobs), and that workspace's
   items otherwise; `0` lists across all workspaces, or on a view that is
   already across all (workspaces, capacities, ...) stays and only makes
-  "all" active. Each switch is pushed, so `esc` walks back through them.
+  "all" active. Each switch is pushed, so `esc` walks back through them; a
+  number for the view already on screen does nothing.
 - `:kind <name>` resolves the name against the cached workspace list and the
   recent ones (id, exact name, then a unique substring) and calls `goto_in`.
 - The header lists the recent workspaces as `<0> all`, `<1> ...` ahead of the
-  key hints. Fetching the workspace list picks up renames.
+  key hints, in one column unless the key hints still fit beside more.
+  Fetching the workspace list picks up renames.
 
 ## The `DataSource` boundary
 
@@ -371,7 +375,7 @@ Ambiguous or missing matches are reported instead of guessed.
 | `WS_TTL` | 60 s | One recursive folder + item listing per workspace is reused while walking its folder tree, flattening, and listing jobs |
 | `CAP_TTL` | 10 min | Capacity names change rarely, and listing them can take seconds |
 | `CAP_WAIT` | 1.5 s | The workspace list waits at most this long for capacity names; a slow listing keeps running in the background and fills the cache for next time |
-| `FAN_OUT` | 6 | Parallel workspace listings for `:items all` |
+| `FAN_OUT` | 6 | Parallel workspace listings for items across all workspaces |
 | `JOB_FAN_OUT` | 4 | Parallel per-item run listings for a workspace jobs view |
 | `SESSION_PAGES` | 3 | Pages of Livy sessions read to detect cancelled Spark runs |
 
