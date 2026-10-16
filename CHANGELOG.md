@@ -3,6 +3,31 @@
 Release Please maintains this file from Conventional Commits when preparing a
 release PR.
 
+## [0.2.0](https://github.com/dsluo/fablic/compare/0.1.1...0.2.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **nav:** esc no longer returns to the previous view. It goes one level up the workspace / folder / item / OneLake hierarchy, so a `:kind` jump or a workspace switch can't be undone with esc.
+* **nav:** treat workspaces like k9s namespaces ([#10](https://github.com/dsluo/fablic/issues/10))
+
+### Features
+
+* **nav:** add T to show a workspace or item as a tree ([#13](https://github.com/dsluo/fablic/issues/13)) ([c4e0eaa](https://github.com/dsluo/fablic/commit/c4e0eaa9cf6c94e0b7ea50352b3d48cdf60b5e8d))
+* **nav:** make esc go up a level instead of back ([#11](https://github.com/dsluo/fablic/issues/11)) ([e9103dc](https://github.com/dsluo/fablic/commit/e9103dc854c88eff25c3d55d1630278281c06d4f))
+* **nav:** treat workspaces like k9s namespaces ([#10](https://github.com/dsluo/fablic/issues/10)) ([91258c0](https://github.com/dsluo/fablic/commit/91258c0fd61b4276c53ac006e4727ad33588bf6f))
+* **writes:** only make data stores type their name to delete ([#9](https://github.com/dsluo/fablic/issues/9)) ([2dde3f3](https://github.com/dsluo/fablic/commit/2dde3f3417540b7326a58ef81e93d1f46dbddcc4))
+
+
+### Documentation
+
+* add architecture overview ([#7](https://github.com/dsluo/fablic/issues/7)) ([e7626cf](https://github.com/dsluo/fablic/commit/e7626cf0eda27d83a440972bcbe3f981e6be9553))
+
+
+### Continuous Integration
+
+* build tier 2 targets only on release PRs and main ([#14](https://github.com/dsluo/fablic/issues/14)) ([544d5a3](https://github.com/dsluo/fablic/commit/544d5a3cb08bb704ecfdbab6039077ce18916003))
+
 ## [0.1.1](https://github.com/dsluo/fablic/compare/0.1.0...0.1.1) (2026-10-10)
 
 
