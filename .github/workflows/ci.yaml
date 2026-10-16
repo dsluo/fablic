@@ -57,3 +57,7 @@ jobs:
     name: Build release targets
     if: github.event_name != 'release'
     uses: ./.github/workflows/build.yaml
+    with:
+      # Tier 2 targets build on release PRs, pushes to main, and manual runs,
+      # not on every PR or merge queue run.
+      all-targets: ${{ (github.event_name != 'pull_request' && github.event_name != 'merge_group') || startsWith(github.head_ref, 'release-please--') }}

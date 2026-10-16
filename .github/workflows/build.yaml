@@ -8,29 +8,43 @@ on:
         type: string
         required: false
         default: ''
+      all-targets:
+        description: Build tier 2 targets as well as tier 1
+        type: boolean
+        required: false
+        default: true
 
 permissions:
   contents: read
 
 jobs:
+  targets:
+    name: Select targets
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select targets
+        id: select
+        env:
+          ALL_TARGETS: ${{ inputs.all-targets }}
+        run: |
+          jq -nr --argjson all "$ALL_TARGETS" '[
+            {os: "ubuntu-24.04", target: "x86_64-unknown-linux-gnu", tier: 1},
+            {os: "ubuntu-24.04-arm", target: "aarch64-unknown-linux-gnu", tier: 2},
+            {os: "macos-15-intel", target: "x86_64-apple-darwin", tier: 2},
+            {os: "macos-15", target: "aarch64-apple-darwin", tier: 1},
+            {os: "windows-2025", target: "x86_64-pc-windows-msvc", tier: 1},
+            {os: "windows-11-arm", target: "aarch64-pc-windows-msvc", tier: 2}
+          ] | map(select($all or .tier == 1)) | "matrix=\(tojson)"' >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: targets
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: windows-2025
-            target: x86_64-pc-windows-msvc
-          - os: windows-11-arm
-            target: aarch64-pc-windows-msvc
+        include: ${{ fromJSON(needs.targets.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
