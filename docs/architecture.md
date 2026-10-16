@@ -397,10 +397,14 @@ if the write failed partway.
   subtree (`F`, or when filtering by type), `items_tree` for the folder tree
   below a folder (`T`), `items_all` across workspaces.
 - **Trees** (`T`, `Query::tree`) exist only inside one workspace. In its
-  items they nest folders and items and stop at items; inside an item they
-  list its OneLake files with a recursive DFS listing, which gives up past
-  `TREE_MAX` (10,000) entries rather than page through a lakehouse's Delta
-  logs. `rows::tree` lays out either one from `(row, parent id)` pairs.
+  items they nest folders and items and stop at items. Inside an item,
+  `onelake::tree_paths` lists files recursively but stops at Delta tables:
+  under `Tables` a folder with a `_delta_log` is a table and the rest are
+  schemas, so a lakehouse's commit and part files are listed only from
+  inside a table. Past `TREE_MAX` (10,000) entries it gives up.
+  `rows::tree` orders either kind from `(row, parent id)` pairs and sets
+  `Row::depth`; the table draws the guides from the visible rows, so the
+  filter never sees them and keeps the ancestors of each match.
 - **Workspace jobs** has no single Fabric endpoint, so fablic lists runs of
   every runnable item in parallel and merges them. Items that fail (for
   example, no permission) are skipped and logged unless all of them fail.

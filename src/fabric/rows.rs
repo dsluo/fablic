@@ -174,8 +174,7 @@ pub fn items_tree(data: &WsData, folder: Option<&str>) -> Vec<Row> {
 }
 
 /// Lay out `(row, parent id)` pairs as the tree below `root`, depth first,
-/// keeping the given order among siblings. The first cell gets `├─` / `└─`
-/// guides, and a container with something under it turns from `▸` to `▾`.
+/// keeping the given order among siblings, with each row's `depth` set.
 /// Rows that aren't below `root` are left out.
 pub fn tree(nodes: Vec<(Row, String)>, root: &str) -> Vec<Row> {
     let mut children: HashMap<String, Vec<Row>> = HashMap::new();
@@ -183,41 +182,25 @@ pub fn tree(nodes: Vec<(Row, String)>, root: &str) -> Vec<Row> {
         children.entry(parent).or_default().push(row);
     }
     let mut out = Vec::new();
-    branch(&mut children, root, None, &mut out);
+    branch(&mut children, root, 0, &mut out);
     out
 }
 
-/// The children of `parent`; `indent` is `None` for the top level, which
-/// gets no guides.
 fn branch(
     children: &mut HashMap<String, Vec<Row>>,
     parent: &str,
-    indent: Option<&str>,
+    depth: usize,
     out: &mut Vec<Row>,
 ) {
     // Taking each list out also ends a cycle in bad data.
     let Some(rows) = children.remove(parent) else {
         return;
     };
-    let n = rows.len();
-    for (i, mut row) in rows.into_iter().enumerate() {
-        let last = i + 1 == n;
-        let (guide, below) = match indent {
-            None => (String::new(), String::new()),
-            Some(pre) if last => (format!("{pre}└─ "), format!("{pre}   ")),
-            Some(pre) => (format!("{pre}├─ "), format!("{pre}│  ")),
-        };
-        let open = children.contains_key(&row.id);
-        if let Some(first) = row.cells.first_mut() {
-            let name = match first.strip_prefix("▸ ") {
-                Some(name) if open => format!("▾ {name}"),
-                _ => first.clone(),
-            };
-            *first = format!("{guide}{name}");
-        }
+    for mut row in rows {
+        row.depth = depth;
         let id = row.id.clone();
         out.push(row);
-        branch(children, &id, Some(&below), out);
+        branch(children, &id, depth + 1, out);
     }
 }
 
@@ -651,8 +634,8 @@ pub fn onelake(paths: &[Value], item: &str) -> Vec<Row> {
     rows
 }
 
-/// A recursive OneLake listing below `dir` as a tree, directories first at
-/// every level.
+/// A OneLake listing of everything below `dir` (see `onelake::tree_paths`)
+/// as a tree, directories first at every level.
 pub fn onelake_tree(paths: &[Value], item: &str, dir: &str) -> Vec<Row> {
     let nodes = onelake(paths, item)
         .into_iter()
@@ -860,23 +843,31 @@ mod tests {
     #[test]
     fn tree_nests_folders_and_items() {
         let d = data();
-        let cells =
-            |rows: &[Row]| -> Vec<String> { rows.iter().map(|r| r.cells[0].clone()).collect() };
+        let shape = |rows: &[Row]| -> Vec<(usize, String)> {
+            rows.iter().map(|r| (r.depth, r.name.clone())).collect()
+        };
+        let want = |pairs: &[(usize, &str)]| -> Vec<(usize, String)> {
+            pairs.iter().map(|&(d, n)| (d, n.to_owned())).collect()
+        };
         assert_eq!(
-            cells(&items_tree(&d, None)),
-            [
-                "▾ archive",
-                "└─ old",
-                "▾ ingest",
-                "├─ ▾ shop",
-                "│  └─ extract",
-                "└─ load",
-                "readme",
-            ]
+            shape(&items_tree(&d, None)),
+            want(&[
+                (0, "archive"),
+                (1, "old"),
+                (0, "ingest"),
+                (1, "shop"),
+                (2, "extract"),
+                (1, "load"),
+                (0, "readme"),
+            ])
         );
         let below = items_tree(&d, Some("f1"));
-        assert_eq!(cells(&below), ["▾ shop", "└─ extract", "load"]);
+        assert_eq!(
+            shape(&below),
+            want(&[(0, "shop"), (1, "extract"), (0, "load")])
+        );
         assert_eq!(below[0].field("path"), Some("ingest/shop"));
+        assert_eq!(below[1].cells[0], "extract", "no guides in the cells");
     }
 
     #[test]
@@ -988,9 +979,16 @@ mod tests {
             p("Files/empty", true),
         ];
         let rows = onelake_tree(&paths, "i", "Files");
-        let names: Vec<&str> = rows.iter().map(|r| r.cells[0].as_str()).collect();
-        assert_eq!(names, ["▸ empty", "▾ raw", "└─ a.json", "z.csv"]);
-        assert_eq!(rows[2].id, "Files/raw/a.json");
+        let shape: Vec<(usize, &str)> = rows.iter().map(|r| (r.depth, r.id.as_str())).collect();
+        assert_eq!(
+            shape,
+            [
+                (0, "Files/empty"),
+                (0, "Files/raw"),
+                (1, "Files/raw/a.json"),
+                (0, "Files/z.csv")
+            ]
+        );
     }
 
     #[test]

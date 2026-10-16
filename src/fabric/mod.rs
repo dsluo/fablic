@@ -198,11 +198,12 @@ impl Inner {
                 let ws = ws.context("OneLake needs a workspace")?;
                 let item = q.scope.item.as_ref().context("OneLake needs an item")?;
                 let dir = q.scope.path.as_deref().unwrap_or("");
-                let paths = self.lake.list(ws, &item.id, dir, q.tree).await?;
+                let (lake, id) = (&self.lake, item.id.as_str());
                 if q.tree {
-                    rows::onelake_tree(&paths, &item.id, dir)
+                    let list = |d: String, all| async move { lake.list(ws, id, &d, all).await };
+                    rows::onelake_tree(&onelake::tree_paths(list, id, dir).await?, id, dir)
                 } else {
-                    rows::onelake(&paths, &item.id)
+                    rows::onelake(&lake.list(ws, id, dir, false).await?, id)
                 }
             }
             Kind::Shortcuts => {

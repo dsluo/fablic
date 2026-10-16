@@ -130,9 +130,13 @@ impl App {
                 "T shows a workspace's items as a tree (pick one with 1-9), or an item's files",
             );
         }
+        self.focus = if q.tree {
+            self.tree_anchor()
+        } else {
+            self.selected_row().map(|r| r.id.clone())
+        };
         self.frame.query.tree = !self.frame.query.tree;
         self.frame.query.flat = false;
-        self.focus = self.selected_row().map(|r| r.id.clone());
         let what = if self.frame.query.tree {
             "everything below here as a tree"
         } else {

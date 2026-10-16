@@ -101,7 +101,7 @@ color = "#89b4fa"
 | `/` | filter: text, `a\|b`, `/regex/`, `~fuzzy`, `!` to invert |
 | `enter` / `esc` | drill in (lakehouses open in OneLake; files preview) / clear the filter, then a type filter, `F` or `T`, then go up a level (OneLake folder, item's folder, parent folder, workspace list) |
 | `F` | flatten workspace folders: every item below, with its folder path |
-| `T` | tree: a workspace's folders and items (not what's inside the items), or inside an item, all of its OneLake files |
+| `T` | tree: a workspace's folders and items (not what's inside the items), or inside an item, its OneLake files (tables are not expanded unless you are in one); filtering keeps the folders a match is in |
 | `d` / `y` | describe as YAML / item definition (notebook source, pipeline JSON) |
 | `o` | open in the Fabric portal |
 | `r` / `ctrl-k` | run the item / cancel the selected run (both ask first; blocked on read-only profiles) |

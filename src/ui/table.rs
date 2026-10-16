@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
-use crate::resources::{Health, Kind};
+use crate::resources::{self, Health, Kind};
 use crate::theme::Theme;
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
@@ -48,8 +48,13 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     }
 
     let columns = Kind::columns_for(q);
+    let lead = if q.tree {
+        guides(&app.rows, &app.view)
+    } else {
+        Vec::new()
+    };
     let avail = area.width.saturating_sub(2) as usize;
-    let mut widths = column_widths(app, columns, avail);
+    let mut widths = column_widths(app, columns, avail, &lead);
     // The last column takes whatever is left over.
     if let Some((last, others)) = widths.split_last_mut() {
         let used = others.iter().sum::<usize>() + 2 * others.len();
@@ -60,7 +65,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             .iter()
             .map(|c| Cell::from(*c).style(Style::new().fg(t.dim).add_modifier(Modifier::BOLD))),
     );
-    let rows = app.view.iter().map(|&i| {
+    let rows = app.view.iter().enumerate().map(|(pos, &i)| {
         let r = &app.rows[i];
         let color = match r.health {
             _ if r.dir => t.accent,
@@ -70,14 +75,17 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             Health::Bad => t.bad,
             Health::Neutral => t.text,
         };
-        let cells = r
-            .cells
-            .iter()
-            .enumerate()
-            .map(|(c, text)| match columns.get(c) {
-                Some(title) if is_path(title) => Cell::from(tail(text, widths[c])),
-                _ => Cell::from(head(text, widths[c])),
-            });
+        let cells =
+            r.cells
+                .iter()
+                .enumerate()
+                .map(|(c, text)| match (columns.get(c), lead.get(pos)) {
+                    (_, Some((guide, open))) if c == 0 => {
+                        Cell::from(tree_cell(guide, *open, text, widths[0]))
+                    }
+                    (Some(title), _) if is_path(title) => Cell::from(tail(text, widths[c])),
+                    _ => Cell::from(head(text, widths[c])),
+                });
         Row::new(cells).style(Style::new().fg(color))
     });
     let constraints = widths.iter().map(|&w| Constraint::Length(w as u16));
@@ -147,20 +155,68 @@ fn fit_widths(desired: &[usize], columns: &[&str], avail: usize) -> Vec<usize> {
 }
 
 /// Each column as wide as its widest cell (capped), shrunk to fit `avail`.
-fn column_widths(app: &App, columns: &[&str], avail: usize) -> Vec<usize> {
+/// In a tree, `lead` holds each row's guides, which come on top of the cap
+/// so deep names aren't cut shorter than shallow ones.
+fn column_widths(app: &App, columns: &[&str], avail: usize, lead: &[(String, bool)]) -> Vec<usize> {
     let desired: Vec<usize> = (0..columns.len())
         .map(|c| {
+            let cap = column_cap(c, columns[c]);
             app.view
                 .iter()
-                .filter_map(|&i| app.rows[i].cells.get(c))
-                .map(|s| s.chars().count())
+                .enumerate()
+                .filter_map(|(pos, &i)| {
+                    let text = app.rows[i].cells.get(c)?.chars().count().min(cap);
+                    let guide = match lead.get(pos) {
+                        Some((g, _)) if c == 0 => g.chars().count(),
+                        _ => 0,
+                    };
+                    Some(guide + text)
+                })
                 .chain(std::iter::once(columns[c].len()))
                 .max()
                 .unwrap_or(4)
-                .min(column_cap(c, columns[c]))
         })
         .collect();
     fit_widths(&desired, columns, avail)
+}
+
+/// Lines for a tree view, per row of `view`, drawn from the rows that are
+/// visible so a filtered tree still connects: the `├─` / `└─` guide, and
+/// whether something shows below the row (an open folder).
+pub(super) fn guides(rows: &[resources::Row], view: &[usize]) -> Vec<(String, bool)> {
+    let mut out = vec![(String::new(), false); view.len()];
+    // From the bottom up, `more[d]`: a later row at depth `d` shares the
+    // current row's ancestor at that depth.
+    let mut more: Vec<bool> = Vec::new();
+    for (pos, &i) in view.iter().enumerate().rev() {
+        let depth = rows[i].depth;
+        let next = |d: usize| more.get(d).copied().unwrap_or(false);
+        let mut guide = String::new();
+        for d in 1..depth {
+            guide.push_str(if next(d) { "│  " } else { "   " });
+        }
+        if depth > 0 {
+            guide.push_str(if next(depth) { "├─ " } else { "└─ " });
+        }
+        let open = view.get(pos + 1).is_some_and(|&n| rows[n].depth > depth);
+        out[pos] = (guide, open);
+        more.resize(depth + 1, false);
+        more[depth] = true;
+    }
+    out
+}
+
+/// The name cell of a tree row: guides, then the name cut to what is left.
+/// An open folder's `▸` turns to `▾`.
+fn tree_cell(guide: &str, open: bool, text: &str, width: usize) -> String {
+    let text = match text.strip_prefix("▸ ") {
+        Some(name) if open => format!("▾ {name}"),
+        _ => text.to_owned(),
+    };
+    match width.checked_sub(guide.chars().count()) {
+        Some(room) if room > 1 => format!("{guide}{}", head(&text, room)),
+        _ => head(&format!("{guide}{text}"), width),
+    }
 }
 
 /// Text cut to `width` with a trailing `…`, so a cut is visible.
@@ -202,6 +258,31 @@ mod tests {
         assert_eq!(w, [27, 16, 28, 11, 0]);
         assert_eq!(w.iter().sum::<usize>() + 8, 90);
         assert_eq!(w.iter().sum::<usize>() + 8, 90);
+    }
+
+    #[test]
+    fn guides_follow_what_is_visible() {
+        let rows: Vec<resources::Row> = [(0, "▸ a"), (1, "b"), (2, "c"), (1, "d"), (0, "e")]
+            .into_iter()
+            .map(|(depth, name)| resources::Row {
+                depth,
+                ..resources::Row::new(name, name, vec![name.into()])
+            })
+            .collect();
+        let lines = |view: &[usize]| -> Vec<String> {
+            guides(&rows, view)
+                .into_iter()
+                .zip(view)
+                .map(|((g, open), &i)| tree_cell(&g, open, &rows[i].cells[0], 20))
+                .collect()
+        };
+        assert_eq!(
+            lines(&[0, 1, 2, 3, 4]),
+            ["▾ a", "├─ b", "│  └─ c", "└─ d", "e"]
+        );
+        // With d filtered out, b is the last child; with nothing under a, it is closed.
+        assert_eq!(lines(&[0, 1, 2, 4]), ["▾ a", "└─ b", "   └─ c", "e"]);
+        assert_eq!(lines(&[0, 4]), ["▸ a", "e"]);
     }
 
     #[test]

@@ -162,7 +162,7 @@ impl FakeSource {
             }
             Kind::OneLake => {
                 let item = q.scope.item.as_ref().map(|i| i.id.as_str()).unwrap_or("");
-                onelake(item, q.scope.path.as_deref().unwrap_or(""), q.tree)
+                onelake(item, q.scope.path.as_deref().unwrap_or(""), q.tree)?
             }
             Kind::Shortcuts => {
                 let item = q.scope.item.as_ref().map(|i| i.id.as_str()).unwrap_or("");
@@ -449,16 +449,21 @@ fn move_to(space: &mut WsData, ws: &str, what: &Movable, to: Option<&Ref>) -> Re
     Ok(())
 }
 
-/// DFS-style listing of a directory in a fake lakehouse or warehouse, or of
-/// everything below it as a tree.
-fn onelake(item: &str, dir: &str, tree: bool) -> Vec<Row> {
-    let mut paths = Vec::new();
-    list_onelake(item, dir, tree, &mut paths);
-    if tree {
-        rows::onelake_tree(&paths, item, dir)
-    } else {
-        rows::onelake(&paths, item)
+/// DFS-style listing of a directory in a fake lakehouse or warehouse, or
+/// a tree of everything below it, found the way the Fabric source does.
+fn onelake(item: &str, dir: &str, tree: bool) -> Result<Vec<Row>> {
+    if !tree {
+        let mut paths = Vec::new();
+        list_onelake(item, dir, false, &mut paths);
+        return Ok(rows::onelake(&paths, item));
     }
+    let list = |d: String, all| {
+        let mut paths = Vec::new();
+        list_onelake(item, &d, all, &mut paths);
+        futures::future::ready(Ok(paths))
+    };
+    let paths = futures::executor::block_on(super::onelake::tree_paths(list, item, dir))?;
+    Ok(rows::onelake_tree(&paths, item, dir))
 }
 
 fn list_onelake(item: &str, dir: &str, recursive: bool, out: &mut Vec<Value>) {
