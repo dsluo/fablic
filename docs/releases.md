@@ -27,8 +27,11 @@ Each job installs its required tools explicitly, then runs tasks with
 development tools such as `cargo-insta`, whose prebuilt binaries do not cover
 every release target.
 
-CI also builds and smoke-tests all six targets in the matrix below on PRs,
-pushes to `main`, and merge queue events. The matrix and build steps live in
+CI also builds and smoke-tests the targets in the matrix below. Tier 1
+targets build on every PR, push to `main`, and merge queue event. Tier 2
+targets build only on release PRs (branches starting `release-please--`),
+pushes to `main`, manual runs, and releases, so a tier 2 break on an ordinary
+PR shows up after merge, before the release PR can pass. The matrix and build steps live in
 `.github/workflows/build.yaml`, which both CI and releases call. CI builds use
 the commit under test; release builds use the validated tag and additionally
 package and upload archives. Release runs perform these builds after their
@@ -42,14 +45,14 @@ native build runs `fablic --fake --snapshot 'j enter F'` without sign-in or tena
 
 The build matrix provides:
 
-| Platform | Target | Build runner |
-| --- | --- | --- |
-| Linux Intel/AMD | `x86_64-unknown-linux-gnu` | Ubuntu 24.04 |
-| Linux ARM | `aarch64-unknown-linux-gnu` | Ubuntu 24.04 ARM |
-| macOS Intel | `x86_64-apple-darwin` | macOS 15 Intel |
-| macOS Apple Silicon | `aarch64-apple-darwin` | macOS 15 |
-| Windows Intel/AMD | `x86_64-pc-windows-msvc` | Windows Server 2025 |
-| Windows ARM | `aarch64-pc-windows-msvc` | Windows 11 ARM |
+| Platform | Target | Build runner | Tier |
+| --- | --- | --- | --- |
+| Linux Intel/AMD | `x86_64-unknown-linux-gnu` | Ubuntu 24.04 | 1 |
+| Linux ARM | `aarch64-unknown-linux-gnu` | Ubuntu 24.04 ARM | 2 |
+| macOS Intel | `x86_64-apple-darwin` | macOS 15 Intel | 2 |
+| macOS Apple Silicon | `aarch64-apple-darwin` | macOS 15 | 1 |
+| Windows Intel/AMD | `x86_64-pc-windows-msvc` | Windows Server 2025 | 1 |
+| Windows ARM | `aarch64-pc-windows-msvc` | Windows 11 ARM | 2 |
 
 After every build succeeds, the workflow uploads all six archives and
 `SHA256SUMS` to the GitHub Release. Linux and macOS use
@@ -70,7 +73,10 @@ on generated releases; the default `GITHUB_TOKEN` suppresses those events.
 See [Release Please's token requirements](https://github.com/googleapis/release-please-action#github-credentials).
 
 Protect `main` with the CI checks `Check (ubuntu-24.04)`, `Check (macos-15)`, and
-`Check (windows-2025)` required before merging. Also require all six build
-checks from the target matrix above. The release bot prepares PRs;
+`Check (windows-2025)` required before merging. Also require the three tier 1
+build checks from the target matrix above. Leave the tier 2 build checks
+optional: they do not run on most PRs, and a required check that never runs
+blocks the merge. Release builds still need all six to succeed before
+uploading. The release bot prepares PRs;
 merging remains the release decision. Binary uploads use the workflow's built-in `GITHUB_TOKEN`
 with Contents write permission, and need no distribution service secrets.
