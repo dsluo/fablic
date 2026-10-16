@@ -6,7 +6,7 @@ expression: render(&mut app)
 "│Profile    fake                         <0> all           <enter> open      <m/p> move                      │"
 "│Account    me@example.com               <1> Urban1 Bronze <y> definition    <ctrl-d> delete                 │"
 "│Workspace  Urban1 Bronze                                  <r> run           <:> command                     │"
-"│Resource   items                                          <F> flatten       </> filter                      │"
+"│Resource   items                                          <F/T> flat/tree   </> filter                      │"
 "│Count      5                                              <e> rename        <?> help                        │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭───────────────────────────────────────── items(Urban1 Bronze)[5] ──────────────────────────────────────────╮"

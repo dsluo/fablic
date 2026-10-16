@@ -285,6 +285,9 @@ pub struct Row {
     pub health: Health,
     /// A container (workspace folder, OneLake directory) that Enter opens.
     pub dir: bool,
+    /// How far down a tree view (`T`) the row sits; 0 at its top and in
+    /// every other view.
+    pub depth: usize,
     /// The API object the row was built from, shown by describe.
     pub raw: Value,
 }
@@ -297,6 +300,7 @@ impl Row {
             cells,
             health: Health::Neutral,
             dir: false,
+            depth: 0,
             raw: Value::Null,
         }
     }

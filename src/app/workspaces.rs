@@ -95,12 +95,18 @@ impl App {
             Kind::Jobs => ws.is_some() && q.scope.item.is_none(),
             _ => false,
         };
+        // Trees are of one workspace, never across all of them.
+        let tree = q.tree && ws.is_some();
         let scope = Scope {
             workspace: ws,
             ..Scope::default()
         };
         let next = if keep {
-            Query { scope, ..q.clone() }
+            Query {
+                scope,
+                tree,
+                ..q.clone()
+            }
         } else {
             Query::new(Kind::Items, scope)
         };

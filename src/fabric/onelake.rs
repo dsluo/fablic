@@ -2,12 +2,13 @@
 //! Unity Catalog-compatible table metadata API (`onelake.table`). Both take
 //! storage-audience tokens, not Fabric ones.
 
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
-use futures::StreamExt;
+use anyhow::{Context, Result, anyhow, bail};
+use futures::{StreamExt, TryStreamExt};
 use reqwest::StatusCode;
 use reqwest::header::RANGE;
 use serde_json::Value;
@@ -18,6 +19,10 @@ use crate::auth::{STORAGE, TokenProvider};
 pub const DFS: &str = "https://onelake.dfs.fabric.microsoft.com";
 pub const TABLES: &str = "https://onelake.table.fabric.microsoft.com/delta";
 const VERSION: &str = "2023-11-03";
+/// Most entries a tree (`T`) lists before giving up.
+const TREE_MAX: usize = 10_000;
+/// Parallel listings while looking for tables under `Tables`.
+const TREE_FAN_OUT: usize = 6;
 
 #[derive(Clone)]
 pub struct OneLake {
@@ -25,6 +30,90 @@ pub struct OneLake {
     tokens: Arc<dyn TokenProvider>,
     dfs: String,
     tables: String,
+}
+
+/// Everything below `dir` in an item, for a tree view. `list(dir, recursive)`
+/// lists a directory of the item. A Delta table is listed but not what is in
+/// it, since that is a file per commit and per part: under `Tables`, each
+/// folder holding a `_delta_log` is a table, and the others are schemas,
+/// whose folders are tables. Inside a table everything is listed.
+pub async fn tree_paths<F, Fut>(list: F, item: &str, dir: &str) -> Result<Vec<Value>>
+where
+    F: Fn(String, bool) -> Fut,
+    Fut: Future<Output = Result<Vec<Value>>>,
+{
+    let depth = if dir.is_empty() {
+        0
+    } else {
+        dir.split('/').count()
+    };
+    let paths = match dir {
+        "" => {
+            let mut out = list(String::new(), false).await?;
+            for top in dirs(&out, item) {
+                let below = if top == "Tables" {
+                    tables(&list, item).await?
+                } else {
+                    list(top, true).await?
+                };
+                out.extend(below);
+            }
+            out
+        }
+        "Tables" => tables(&list, item).await?,
+        _ if dir.starts_with("Tables/") && depth == 2 => {
+            let here = list(dir.to_owned(), false).await?;
+            if is_table(&here) {
+                list(dir.to_owned(), true).await?
+            } else {
+                here
+            }
+        }
+        _ => list(dir.to_owned(), true).await?,
+    };
+    if paths.len() > TREE_MAX {
+        bail!("more than {TREE_MAX} files below here: open a folder further down for a tree");
+    }
+    Ok(paths)
+}
+
+/// `Tables` and the level below it, with tables as leaves.
+async fn tables<F, Fut>(list: &F, item: &str) -> Result<Vec<Value>>
+where
+    F: Fn(String, bool) -> Fut,
+    Fut: Future<Output = Result<Vec<Value>>>,
+{
+    let mut out = list("Tables".into(), false).await?;
+    let schemas: Vec<Vec<Value>> = futures::stream::iter(dirs(&out, item))
+        .map(|d| list(d, false))
+        .buffered(TREE_FAN_OUT)
+        .try_collect()
+        .await?;
+    for below in schemas {
+        if !is_table(&below) {
+            out.extend(below);
+        }
+    }
+    Ok(out)
+}
+
+/// Paths of the directories in a listing, relative to the item.
+fn dirs(paths: &[Value], item: &str) -> Vec<String> {
+    let prefix = format!("{item}/");
+    paths
+        .iter()
+        .filter(|p| p["isDirectory"] == "true" || p["isDirectory"] == true)
+        .filter_map(|p| p["name"].as_str()?.strip_prefix(&prefix).map(str::to_owned))
+        .collect()
+}
+
+/// A folder's listing is a Delta table's when it has a transaction log.
+fn is_table(listing: &[Value]) -> bool {
+    listing.iter().any(|p| {
+        p["name"]
+            .as_str()
+            .is_some_and(|n| n.ends_with("/_delta_log"))
+    })
 }
 
 /// Path inside an item, URL-encoded segment by segment (names can have spaces).
@@ -100,16 +189,23 @@ impl OneLake {
         })
     }
 
-    /// One directory level under an item. `dir` is relative to the item
-    /// (`""` for its root). Entry names come back as `{item}/{path}`.
-    pub async fn list(&self, ws: &str, item: &str, dir: &str) -> Result<Vec<Value>> {
+    /// One directory level under an item, or with `recursive` everything
+    /// below it. `dir` is relative to the item (`""` for its root). Entry
+    /// names come back as `{item}/{path}`.
+    pub async fn list(
+        &self,
+        ws: &str,
+        item: &str,
+        dir: &str,
+        recursive: bool,
+    ) -> Result<Vec<Value>> {
         let directory = if dir.is_empty() {
             item.to_owned()
         } else {
             format!("{item}/{dir}")
         };
         let base = format!(
-            "{}/{ws}?resource=filesystem&recursive=false&directory={}",
+            "{}/{ws}?resource=filesystem&recursive={recursive}&directory={}",
             self.dfs,
             urlencoding::encode(&directory)
         );
@@ -126,6 +222,12 @@ impl OneLake {
             let page: Value = resp.json().await?;
             if let Some(Value::Array(paths)) = page.get("paths") {
                 out.extend(paths.iter().cloned());
+            }
+            // Stop paging early: a big folder can hold millions of files.
+            if recursive && out.len() > TREE_MAX {
+                bail!(
+                    "more than {TREE_MAX} files below here: open a folder further down for a tree"
+                );
             }
             let body = page
                 .get("ContinuationToken")
@@ -217,9 +319,130 @@ mod tests {
             .up_to_n_times(1)
             .mount(&server)
             .await;
-        let got = lake(&server).await.list("w", "i", "Files").await.unwrap();
+        let got = lake(&server)
+            .await
+            .list("w", "i", "Files", false)
+            .await
+            .unwrap();
         let names: Vec<&str> = got.iter().map(|p| p["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["i/Files/a.csv", "i/Files/b.csv"]);
+    }
+
+    /// A fake item for `tree_paths`: directory -> entries (a trailing `/`
+    /// marks a directory). Records each listing it is asked for.
+    fn item(
+        tree: &'static [(&'static str, &'static [&'static str])],
+        calls: &std::sync::Mutex<Vec<(String, bool)>>,
+        dir: String,
+        recursive: bool,
+    ) -> futures::future::Ready<Result<Vec<Value>>> {
+        calls.lock().unwrap().push((dir.clone(), recursive));
+        let mut out = Vec::new();
+        let mut todo = vec![dir];
+        while let Some(d) = todo.pop() {
+            let entries = tree
+                .iter()
+                .find(|(k, _)| *k == d)
+                .map_or(&[][..], |(_, v)| v);
+            for e in entries {
+                let name = e.trim_end_matches('/');
+                let path = if d.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{d}/{name}")
+                };
+                let is_dir = e.ends_with('/');
+                out.push(json!({"name": format!("i/{path}"), "isDirectory": is_dir.to_string()}));
+                if recursive && is_dir {
+                    todo.push(path);
+                }
+            }
+        }
+        futures::future::ready(Ok(out))
+    }
+
+    const LAKEHOUSE: &[(&str, &[&str])] = &[
+        ("", &["Files/", "Tables/"]),
+        ("Files", &["raw/", "a.csv"]),
+        ("Files/raw", &["b.json"]),
+        ("Tables", &["sales/", "dbo/"]),
+        ("Tables/sales", &["_delta_log/", "part-0.parquet"]),
+        ("Tables/sales/_delta_log", &["0.json"]),
+        ("Tables/dbo", &["orders/"]),
+        ("Tables/dbo/orders", &["_delta_log/"]),
+        ("Tables/dbo/orders/_delta_log", &["0.json"]),
+    ];
+
+    fn names(paths: &[Value]) -> Vec<&str> {
+        let mut n: Vec<&str> = paths.iter().map(|p| p["name"].as_str().unwrap()).collect();
+        n.sort();
+        n
+    }
+
+    #[test]
+    fn trees_list_files_in_full_but_stop_at_tables() {
+        let calls = std::sync::Mutex::new(Vec::new());
+        let list = |d, r| item(LAKEHOUSE, &calls, d, r);
+        let root = futures::executor::block_on(tree_paths(list, "i", "")).unwrap();
+        assert_eq!(
+            names(&root),
+            [
+                "i/Files",
+                "i/Files/a.csv",
+                "i/Files/raw",
+                "i/Files/raw/b.json",
+                "i/Tables",
+                "i/Tables/dbo",
+                "i/Tables/dbo/orders",
+                "i/Tables/sales",
+            ]
+        );
+        // Tables is never listed recursively.
+        assert!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(d, r)| !(*r && d.starts_with("Tables"))),
+            "{calls:?}"
+        );
+
+        // Opened at a schema, its tables are leaves; inside a table, all of it shows.
+        let schema = futures::executor::block_on(tree_paths(list, "i", "Tables/dbo")).unwrap();
+        assert_eq!(names(&schema), ["i/Tables/dbo/orders"]);
+        let table = futures::executor::block_on(tree_paths(list, "i", "Tables/sales")).unwrap();
+        assert_eq!(
+            names(&table),
+            [
+                "i/Tables/sales/_delta_log",
+                "i/Tables/sales/_delta_log/0.json",
+                "i/Tables/sales/part-0.parquet"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn recursive_listing_asks_for_it_and_gives_up_when_huge() {
+        let server = MockServer::start().await;
+        let many: Vec<Value> = (0..=TREE_MAX)
+            .map(|n| json!({"name": format!("i/Files/{n}.csv")}))
+            .collect();
+        Mock::given(path("/w"))
+            .and(query_param("directory", "i/Files"))
+            .and(query_param("recursive", "true"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"paths": many, "ContinuationToken": "next"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let err = lake(&server)
+            .await
+            .list("w", "i", "Files", true)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("more than 10000 files"), "{err}");
     }
 
     #[tokio::test]

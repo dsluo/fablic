@@ -1,4 +1,4 @@
-//! Per-row actions: item definitions, open in browser, flatten folders.
+//! Per-row actions: item definitions, open in browser, flatten folders, trees.
 
 use super::{App, Detail, DetailRequest, Effect, Level, Mode};
 use crate::resources::{Kind, Row};
@@ -104,11 +104,43 @@ impl App {
             return self.flash(Level::Warn, "F flattens folders in a workspace's items");
         }
         self.frame.query.flat = !self.frame.query.flat;
+        self.frame.query.tree = false;
         self.frame.selected = 0;
         let what = if self.frame.query.flat {
             "all items below this folder"
         } else {
             "one folder level"
+        };
+        self.flash(Level::Info, format!("showing {what}"));
+        self.load();
+    }
+
+    /// `T`: switch between one level and everything below as a tree. In a
+    /// workspace that is its folders and items; in an item, its OneLake files.
+    pub(super) fn toggle_tree(&mut self) {
+        let q = &self.frame.query;
+        let fits = match q.kind {
+            Kind::Items => q.scope.workspace.is_some() && q.item_type.is_none(),
+            Kind::OneLake => true,
+            _ => false,
+        };
+        if !fits {
+            return self.flash(
+                Level::Warn,
+                "T shows a workspace's items as a tree (pick one with 1-9), or an item's files",
+            );
+        }
+        self.focus = if q.tree {
+            self.tree_anchor()
+        } else {
+            self.selected_row().map(|r| r.id.clone())
+        };
+        self.frame.query.tree = !self.frame.query.tree;
+        self.frame.query.flat = false;
+        let what = if self.frame.query.tree {
+            "everything below here as a tree"
+        } else {
+            "one level"
         };
         self.flash(Level::Info, format!("showing {what}"));
         self.load();

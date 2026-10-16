@@ -85,7 +85,7 @@ That split gives fablic three properties it depends on:
 | `src/app/navigation.rs` | Drilling into rows, `:kind` jumps, going up a level, scope inference |
 | `src/app/workspaces.rs` | The active workspace and recent ones (k9s-style namespaces), number-key switching, workspace names on the command line |
 | `src/app/command.rs` | The `:` command palette: candidates, fuzzy suggestions, command execution |
-| `src/app/actions.rs` | Per-row read actions: item definitions, open in portal, flatten folders |
+| `src/app/actions.rs` | Per-row read actions: item definitions, open in portal, flatten folders, trees |
 | `src/app/jobs.rs` | Run and cancel jobs, plus the "watch" window after an action |
 | `src/app/writes.rs` | All other writes: rename, describe, delete, folders, moves, roles, shortcuts; typed prompts |
 | `src/app/onelake.rs` | OneLake file preview, table schema, download |
@@ -247,7 +247,7 @@ Further tables describe which item types are creatable, which have a job type
 (`job_type_for`), and which have OneLake storage (`has_onelake`).
 
 A `Query` is a `Kind` plus a `Scope` (workspace, folder, item, OneLake path),
-an optional item type and a `flat` flag. `Query` is `Hash + Eq`, which is
+an optional item type and `flat` and `tree` flags. `Query` is `Hash + Eq`, which is
 what lets it serve as the cache key and as the "same view?" test in
 `push_query`.
 
@@ -272,8 +272,8 @@ opens, and the `raw` JSON the row was built from. `d` (describe) renders
   rather than an error from the API. With no workspace in the view or the
   highlighted row, the active one applies (see below); `0` lists across
   every workspace.
-- **`back` (`esc`)** clears an active filter first, then a type filter or
-  flattening, then goes one level up the hierarchy (`parent`): a OneLake
+- **`back` (`esc`)** clears an active filter first, then a type filter,
+  flattening or a tree, then goes one level up the hierarchy (`parent`): a OneLake
   directory to its parent, any view of an item to the folder level that
   lists it, a folder to its parent folder, and a workspace's views, lists
   across workspaces and tenant-wide kinds to the workspace list. There is no
@@ -394,7 +394,17 @@ if the write failed partway.
 
 - **Items** fetches folders and items once per workspace (recursive) and
   slices them locally: `items_level` for one folder, `items_flat` for a
-  subtree (`F`, or when filtering by type), `items_all` across workspaces.
+  subtree (`F`, or when filtering by type), `items_tree` for the folder tree
+  below a folder (`T`), `items_all` across workspaces.
+- **Trees** (`T`, `Query::tree`) exist only inside one workspace. In its
+  items they nest folders and items and stop at items. Inside an item,
+  `onelake::tree_paths` lists files recursively but stops at Delta tables:
+  under `Tables` a folder with a `_delta_log` is a table and the rest are
+  schemas, so a lakehouse's commit and part files are listed only from
+  inside a table. Past `TREE_MAX` (10,000) entries it gives up.
+  `rows::tree` orders either kind from `(row, parent id)` pairs and sets
+  `Row::depth`; the table draws the guides from the visible rows, so the
+  filter never sees them and keeps the ancestors of each match.
 - **Workspace jobs** has no single Fabric endpoint, so fablic lists runs of
   every runnable item in parallel and merges them. Items that fail (for
   example, no permission) are skipped and logged unless all of them fail.

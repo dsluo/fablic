@@ -182,6 +182,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("d", "describe (raw object as YAML)"),
     ("y", "item definition (notebook source, ...)"),
     ("F", "flatten folders: every item below"),
+    ("T", "tree: folders and items, or an item's files"),
     ("o", "open in the Fabric portal"),
     ("r", "run the item (asks first)"),
     ("ctrl-k", "cancel the selected run (asks first)"),
@@ -517,6 +518,16 @@ mod tests {
         steps(
             &mut app,
             &[KeyCode::Char('j'), KeyCode::Enter, KeyCode::Char('F')],
+        );
+        insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
+    fn snapshot_tree() {
+        let mut app = fake_app();
+        steps(
+            &mut app,
+            &[KeyCode::Char('j'), KeyCode::Enter, KeyCode::Char('T')],
         );
         insta::assert_snapshot!(render(&mut app));
     }

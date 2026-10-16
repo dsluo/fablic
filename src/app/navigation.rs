@@ -25,8 +25,8 @@ impl App {
         self.load();
     }
 
-    /// Esc: clear the filter, then an item type or flattening, then go one
-    /// level up: OneLake path, item, folder, workspace, workspace list.
+    /// Esc: clear the filter, then an item type, flattening or a tree, then go
+    /// one level up: OneLake path, item, folder, workspace, workspace list.
     pub fn back(&mut self) {
         if !self.frame.filter.is_empty() {
             self.frame.filter.clear();
@@ -34,10 +34,15 @@ impl App {
             return;
         }
         let q = &self.frame.query;
-        if q.scope.workspace.is_some() && (q.item_type.is_some() || q.flat) {
+        if q.tree || (q.scope.workspace.is_some() && (q.item_type.is_some() || q.flat)) {
+            self.focus = if q.tree {
+                self.tree_anchor()
+            } else {
+                self.selected_row().map(|r| r.id.clone())
+            };
             self.frame.query.item_type = None;
             self.frame.query.flat = false;
-            self.focus = self.selected_row().map(|r| r.id.clone());
+            self.frame.query.tree = false;
             return self.load();
         }
         if let Some((query, focus)) = self.parent() {
@@ -96,6 +101,17 @@ impl App {
                 ws.as_ref().map(|w| w.id.clone()),
             )),
         }
+    }
+
+    /// In a tree, the row at its top level that holds the highlighted one:
+    /// the row the one-level view lists for it.
+    pub(super) fn tree_anchor(&self) -> Option<String> {
+        let mut i = *self.view.get(self.table.selected()?)?;
+        while self.rows[i].depth > 0 {
+            let depth = self.rows[i].depth;
+            i = (0..i).rev().find(|&j| self.rows[j].depth < depth)?;
+        }
+        Some(self.rows[i].id.clone())
     }
 
     /// A row from any items listing seen with this profile.
@@ -452,6 +468,143 @@ mod tests {
         press(&mut app, KeyCode::Enter); // ingest/
         press(&mut app, KeyCode::Char('F'));
         assert_eq!(names(&app), ["load_all", "ingest_shop"]);
+    }
+
+    #[test]
+    fn tree_shows_folders_and_items_but_not_inside_items() {
+        let mut app = into_bronze();
+        press(&mut app, KeyCode::Char('T'));
+        assert!(app.frame.query.tree);
+        assert_eq!(
+            names(&app),
+            [
+                "ingest",
+                "shop",
+                "ingest_shop",
+                "load_all",
+                "bronze_lh",
+                "Finance Model",
+                "transform_silver"
+            ]
+        );
+        // The cursor stays on the folder it was on.
+        assert_eq!(app.selected_row().unwrap().name, "ingest");
+
+        // Items open as they do anywhere else, and esc comes back to the level.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.kind(), Kind::Jobs);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.frame.query.scope.label(),
+            "Urban1 Bronze › ingest › shop"
+        );
+
+        // On the tree, esc drops the tree before going up.
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.frame.query.tree);
+        assert_eq!(app.kind(), Kind::Items);
+
+        // F and T replace each other.
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Char('F'));
+        assert!(app.frame.query.flat && !app.frame.query.tree);
+        press(&mut app, KeyCode::Char('T'));
+        assert!(app.frame.query.tree && !app.frame.query.flat);
+    }
+
+    #[test]
+    fn tree_needs_one_workspace() {
+        let mut app = into_bronze();
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Char('0'));
+        assert!(app.frame.query.scope.workspace.is_none());
+        assert!(!app.frame.query.tree, "no tree across workspaces");
+        press(&mut app, KeyCode::Char('T'));
+        assert!(!app.frame.query.tree);
+        assert!(app.status.as_ref().unwrap().text.starts_with("T shows"));
+    }
+
+    fn shape(app: &App) -> Vec<(usize, String)> {
+        app.view
+            .iter()
+            .map(|&i| (app.rows[i].depth, app.rows[i].id.clone()))
+            .collect()
+    }
+
+    fn want(pairs: &[(usize, &str)]) -> Vec<(usize, String)> {
+        pairs.iter().map(|&(d, n)| (d, n.to_owned())).collect()
+    }
+
+    #[test]
+    fn tree_inside_an_item_lists_files_but_not_inside_tables() {
+        let mut app = into_bronze();
+        press(&mut app, KeyCode::Char('j')); // bronze_lh
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('T'));
+        assert_eq!(
+            shape(&app),
+            want(&[
+                (0, "Files"),
+                (1, "Files/raw"),
+                (2, "Files/raw/events.json"),
+                (1, "Files/extract.parquet"),
+                (1, "Files/readme.txt"),
+                (0, "Tables"),
+                (1, "Tables/customers"),
+                (1, "Tables/sales"),
+            ])
+        );
+        // Files still preview, from anywhere in the tree.
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Detail);
+        assert!(
+            app.detail.title.contains("Files/raw/events.json"),
+            "{}",
+            app.detail.title
+        );
+        app.on_key(key(KeyCode::Esc));
+
+        // Leaving the tree puts the cursor on what holds the row, not on
+        // whatever sits at the same position one level up.
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.frame.query.tree);
+        assert_eq!(app.selected_row().unwrap().id, "Files");
+        press(&mut app, KeyCode::Char('T'));
+        press(&mut app, KeyCode::Char('G'));
+        press(&mut app, KeyCode::Char('T'));
+        assert_eq!(app.selected_row().unwrap().id, "Tables");
+
+        // Inside a table, the tree has all of it.
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter); // Tables/sales
+        press(&mut app, KeyCode::Char('T'));
+        assert_eq!(
+            shape(&app),
+            want(&[
+                (0, "Tables/sales/_delta_log"),
+                (1, "Tables/sales/_delta_log/00000000000000000000.json"),
+                (0, "Tables/sales/part-00000.snappy.parquet"),
+            ])
+        );
+    }
+
+    #[test]
+    fn filtering_a_tree_keeps_where_matches_are() {
+        let mut app = into_bronze();
+        press(&mut app, KeyCode::Char('T'));
+        type_str(&mut app, "/");
+        type_str(&mut app, "/^ingest_shop/");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(names(&app), ["ingest", "shop", "ingest_shop"]);
+        assert_eq!(app.selected_row().unwrap().name, "ingest");
     }
 
     #[test]

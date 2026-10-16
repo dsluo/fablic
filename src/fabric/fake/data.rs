@@ -427,6 +427,13 @@ pub fn listing(item: &str, dir: &str) -> Vec<(&'static str, bool, u64)> {
         ],
         ("it-2", "Files/raw") => vec![("events.json", false, 120)],
         ("it-2", "Tables") => vec![("sales", true, 0), ("customers", true, 0)],
+        ("it-2", "Tables/sales" | "Tables/customers") => vec![
+            ("_delta_log", true, 0),
+            ("part-00000.snappy.parquet", false, 52_000),
+        ],
+        ("it-2", "Tables/sales/_delta_log" | "Tables/customers/_delta_log") => {
+            vec![("00000000000000000000.json", false, 1_900)]
+        }
 
         // A schema-enabled lakehouse: tables sit one level down.
         ("it-20", "") => vec![("Files", true, 0), ("Tables", true, 0)],

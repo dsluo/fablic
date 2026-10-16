@@ -429,6 +429,9 @@ impl App {
         };
         let filter = Filter::parse(&self.frame.filter).unwrap_or(Filter::All);
         self.view = filter.apply(&self.rows);
+        if self.frame.query.tree {
+            self.view = with_ancestors(&self.rows, &self.view);
+        }
         let pos = keep
             .and_then(|id| self.view.iter().position(|&i| self.rows[i].id == id))
             .unwrap_or(self.frame.selected);
@@ -489,6 +492,7 @@ impl App {
             (KeyCode::Char('y'), false) => self.definition(),
             (KeyCode::Char('o'), false) => self.open_in_browser(),
             (KeyCode::Char('F'), false) => self.toggle_flat(),
+            (KeyCode::Char('T'), false) => self.toggle_tree(),
             (KeyCode::Char('r'), false) => self.run_job(),
             (KeyCode::Char('k'), true) => self.cancel_job(),
             (KeyCode::Char('s'), false) if self.kind() == Kind::OneLake => self.schema(),
@@ -581,6 +585,29 @@ impl App {
         };
         self.mode = Mode::Detail;
     }
+}
+
+/// `view` plus the rows above each of its rows in a tree, so a filtered tree
+/// still shows where each match is. `view` is in row order, as filters give it.
+fn with_ancestors(rows: &[Row], view: &[usize]) -> Vec<usize> {
+    let mut keep = vec![false; rows.len()];
+    for &i in view {
+        keep[i] = true;
+        let mut depth = rows[i].depth;
+        for j in (0..i).rev() {
+            if depth == 0 {
+                break;
+            }
+            if rows[j].depth < depth {
+                if keep[j] {
+                    break; // and so is everything above it
+                }
+                keep[j] = true;
+                depth = rows[j].depth;
+            }
+        }
+    }
+    (0..rows.len()).filter(|&i| keep[i]).collect()
 }
 
 #[cfg(test)]
