@@ -33,6 +33,73 @@ pub fn workspaces() -> Vec<Value> {
     ]
 }
 
+/// `git/connection` of each workspace: Urban2 Silver is on GitHub with
+/// changes on both sides, Urban3 Gold on Azure DevOps and synced, and the
+/// rest aren't connected.
+pub fn git_connection(ws: &str) -> Value {
+    match ws {
+        "ws-2" => json!({
+            "gitProviderDetails": {
+                "gitProviderType": "GitHub", "ownerName": "contoso",
+                "repositoryName": "fabric-silver", "branchName": "main",
+                "directoryName": "/workspace"
+            },
+            "gitSyncDetails": {"head": "1111111111111111111111111111111111111111",
+                               "lastSyncTime": "2026-10-08T16:20:00Z"},
+            "gitConnectionState": "ConnectedAndInitialized",
+            "gitConnectionType": "Full"
+        }),
+        "ws-5" => json!({
+            "gitProviderDetails": {
+                "gitProviderType": "AzureDevOps", "organizationName": "contoso",
+                "projectName": "Analytics", "repositoryName": "gold",
+                "branchName": "release/2026.10", "directoryName": ""
+            },
+            "gitSyncDetails": {"head": "2222222222222222222222222222222222222222",
+                               "lastSyncTime": "2026-10-01T09:00:00Z"},
+            "gitConnectionState": "ConnectedAndInitialized",
+            "gitConnectionType": "Full"
+        }),
+        _ => json!({"gitProviderDetails": null, "gitSyncDetails": null,
+                    "gitConnectionState": "NotConnected"}),
+    }
+}
+
+/// `git/status` of a connected workspace; items not listed are synced.
+pub fn git_status(ws: &str) -> Value {
+    let change = |id: &str, name: &str, t: &str, ws_change: Option<&str>, remote: Option<&str>| {
+        let mut c = json!({
+            "itemMetadata": {"itemIdentifier": {"objectId": id, "logicalId": id},
+                             "itemType": t, "displayName": name},
+            "conflictType": if ws_change.is_some() && remote.is_some() { "Conflict" } else { "None" }
+        });
+        if let Some(w) = ws_change {
+            c["workspaceChange"] = w.into();
+        }
+        if let Some(r) = remote {
+            c["remoteChange"] = r.into();
+        }
+        c
+    };
+    match ws {
+        "ws-2" => json!({
+            "workspaceHead": "1111111111111111111111111111111111111111",
+            "remoteCommitHash": "3333333333333333333333333333333333333333",
+            "changes": [
+                change("it-21", "merge_customers", "Notebook", Some("Modified"), None),
+                change("it-22", "merge_orders", "Notebook", None, Some("Modified")),
+                change("it-23", "nightly_silver", "DataPipeline", Some("Modified"), Some("Modified")),
+                change("it-32", "settings", "VariableLibrary", Some("Added"), None),
+            ]
+        }),
+        _ => json!({
+            "workspaceHead": "2222222222222222222222222222222222222222",
+            "remoteCommitHash": "2222222222222222222222222222222222222222",
+            "changes": []
+        }),
+    }
+}
+
 /// `cap-trial` is left out on purpose: a capacity the caller can't see
 /// shows as its id.
 pub fn capacities() -> Vec<Value> {

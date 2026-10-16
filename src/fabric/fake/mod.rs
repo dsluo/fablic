@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 
-use super::rows::{self, WsData};
+use super::rows::{self, Git, WsData};
 use crate::resources::{Kind, Row, job_type_for};
 use crate::source::{Action, DataSource, Movable, PREVIEW_BYTES, Part, Query, Ref, table_of};
 
@@ -65,6 +65,14 @@ impl Default for FakeSource {
     }
 }
 
+/// Git status of a workspace's items, or nothing when it isn't connected.
+fn git_status(ws: &str) -> Git {
+    match data::git_connection(ws)["gitConnectionState"].as_str() {
+        Some("NotConnected") | None => Git::None,
+        Some(_) => Git::Some(data::git_status(ws)),
+    }
+}
+
 /// The fixed moment fake runs are timed against.
 pub fn now() -> DateTime<Utc> {
     rows::parse_utc("2026-10-09T13:10:00").unwrap_or_default()
@@ -109,13 +117,23 @@ impl FakeSource {
         let state = self.lock();
         let space = |id: &str| state.spaces.get(id).cloned().unwrap_or_default();
         Ok(match q.kind {
-            Kind::Workspaces => rows::workspaces(&data::workspaces(), &data::capacities()),
+            Kind::Workspaces => {
+                let git = data::workspaces()
+                    .iter()
+                    .map(|w| {
+                        let id = rows::id_of(w);
+                        let conn = Git::Some(data::git_connection(&id));
+                        (id, conn)
+                    })
+                    .collect();
+                rows::workspaces(&data::workspaces(), &data::capacities(), &git)
+            }
             Kind::Items => match ws {
-                Some(id) if q.tree => rows::items_tree(&space(id), folder),
+                Some(id) if q.tree => rows::items_tree(&space(id), folder, &git_status(id)),
                 Some(id) if q.is_flat() => {
-                    rows::items_flat(&space(id), folder, q.item_type.as_deref())
+                    rows::items_flat(&space(id), folder, q.item_type.as_deref(), &git_status(id))
                 }
-                Some(id) => rows::items_level(&space(id), folder),
+                Some(id) => rows::items_level(&space(id), folder, &git_status(id)),
                 None => {
                     let spaces: Vec<_> = data::workspaces()
                         .into_iter()

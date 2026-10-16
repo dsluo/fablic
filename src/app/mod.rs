@@ -412,9 +412,12 @@ impl App {
         let watching = self.live_until.is_some_and(|t| Instant::now() < t);
         let live = self.kind() == Kind::Jobs
             && (watching || self.rows.iter().any(|r| r.health == Health::Pending));
+        // Cells still loading in the background (Git state) only need the
+        // source's caches read again, not everything fetched anew.
+        let filling = self.rows.iter().any(|r| r.loading);
         let due = self.fetched_at.is_none_or(|t| t.elapsed() >= LIVE_REFRESH);
-        if live && due && !self.loading && self.mode == Mode::Table {
-            self.refresh(true);
+        if (live || filling) && due && !self.loading && self.mode == Mode::Table {
+            self.refresh(live);
         }
     }
 
@@ -677,6 +680,22 @@ pub(crate) mod tests {
         assert_eq!(app.kind(), Kind::Workspaces);
         assert_eq!(app.view.len(), 5);
         assert_eq!(app.table.selected(), Some(0));
+    }
+
+    #[test]
+    fn refreshes_from_cache_while_cells_load() {
+        let mut app = fake_app();
+        app.take_effects();
+        app.on_tick();
+        assert!(app.take_effects().is_empty(), "nothing loading");
+        app.rows[0].loading = true;
+        app.fetched_at = Some(Instant::now() - LIVE_REFRESH);
+        app.on_tick();
+        let fetch = app.take_effects().pop();
+        assert!(
+            matches!(fetch, Some(Effect::Fetch { force: false, .. })),
+            "{fetch:?}"
+        );
     }
 
     #[test]

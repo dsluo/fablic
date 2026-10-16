@@ -23,7 +23,7 @@ use crate::source::{Action, DataSource, Movable, PREVIEW_BYTES, Part, Query, tab
 pub use client::Client;
 use graph::Graph;
 use onelake::OneLake;
-use rows::WsData;
+use rows::{Git, WsData};
 
 /// How long a workspace's folder/item listing is reused while navigating its tree.
 const WS_TTL: Duration = Duration::from_secs(60);
@@ -37,6 +37,10 @@ const SESSION_PAGES: usize = 3;
 const CAP_TTL: Duration = Duration::from_secs(600);
 /// How long the workspace list waits for capacity names before showing ids.
 const CAP_WAIT: Duration = Duration::from_millis(1500);
+/// Git connections change rarely; one request per workspace isn't cheap.
+const GIT_TTL: Duration = Duration::from_secs(600);
+/// How long a listing waits for Git state before showing it as loading.
+const GIT_WAIT: Duration = Duration::from_millis(1500);
 
 pub struct FabricSource {
     inner: Arc<Inner>,
@@ -51,6 +55,92 @@ struct Inner {
     tokens: Arc<dyn TokenProvider>,
     spaces: Mutex<HashMap<String, (Instant, Arc<WsData>)>>,
     capacities: Cached<Vec<Value>>,
+    /// Git connection of each workspace, for the workspace list.
+    git_links: Arc<Slow>,
+    /// Git status of each connected workspace's items.
+    git_status: Arc<Slow>,
+}
+
+/// Per-workspace values that are slower to fetch than the listing they
+/// decorate. A listing waits a moment for them; the rest keep loading in the
+/// background (a few at a time) and show as `Git::Loading` until a later
+/// refresh picks them up. A value being refetched stays visible meanwhile.
+struct Slow {
+    ttl: Duration,
+    entries: Mutex<HashMap<String, SlowEntry>>,
+    permits: Arc<tokio::sync::Semaphore>,
+}
+
+#[derive(Default)]
+struct SlowEntry {
+    value: Option<(Instant, Git)>,
+    loading: bool,
+}
+
+impl Slow {
+    fn new(ttl: Duration) -> Arc<Slow> {
+        Arc::new(Slow {
+            ttl,
+            entries: Mutex::default(),
+            permits: Arc::new(tokio::sync::Semaphore::new(FAN_OUT)),
+        })
+    }
+
+    async fn get<F, Fut>(
+        self: &Arc<Self>,
+        keys: &[String],
+        force: bool,
+        load: F,
+    ) -> HashMap<String, Git>
+    where
+        F: Fn(String) -> Fut,
+        Fut: Future<Output = Git> + Send + 'static,
+    {
+        let mut tasks = Vec::new();
+        {
+            let mut entries = self.entries.lock().unwrap();
+            for key in keys {
+                let e = entries.entry(key.clone()).or_default();
+                let stale = e
+                    .value
+                    .as_ref()
+                    .is_none_or(|(at, _)| force || at.elapsed() >= self.ttl);
+                if stale && !e.loading {
+                    e.loading = true;
+                    let (me, key, fut) = (self.clone(), key.clone(), load(key.clone()));
+                    tasks.push(tokio::spawn(async move {
+                        let value = match me.permits.clone().acquire_owned().await {
+                            Ok(_permit) => fut.await,
+                            Err(_) => Git::None,
+                        };
+                        let mut entries = me.entries.lock().unwrap();
+                        let e = entries.entry(key).or_default();
+                        e.value = Some((Instant::now(), value));
+                        e.loading = false;
+                    }));
+                }
+            }
+        }
+        let _ = tokio::time::timeout(GIT_WAIT, futures::future::join_all(tasks)).await;
+        let entries = self.entries.lock().unwrap();
+        keys.iter()
+            .map(|k| {
+                let git = match entries.get(k).and_then(|e| e.value.as_ref()) {
+                    Some((_, v)) => v.clone(),
+                    None => Git::Loading,
+                };
+                (k.clone(), git)
+            })
+            .collect()
+    }
+
+    /// Drop what is known about `key`, so the next listing asks again.
+    fn forget(&self, key: &str) {
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(e) = entries.get_mut(key) {
+            e.value = None;
+        }
+    }
 }
 
 impl FabricSource {
@@ -77,6 +167,8 @@ impl FabricSource {
                 tokens,
                 spaces: Mutex::new(HashMap::new()),
                 capacities: Arc::default(),
+                git_links: Slow::new(GIT_TTL),
+                git_status: Slow::new(WS_TTL),
             }),
         }
     }
@@ -127,25 +219,86 @@ impl Inner {
         }
     }
 
+    /// Git connections of these workspaces. One the account can't read
+    /// (Git needs contributor) is logged and left blank.
+    async fn git_links(&self, ids: Vec<String>, force: bool) -> HashMap<String, Git> {
+        let client = self.client.clone();
+        self.git_links
+            .get(&ids, force, |id| {
+                let client = client.clone();
+                async move {
+                    match client.get(&format!("workspaces/{id}/git/connection")).await {
+                        Ok(conn) => Git::Some(conn),
+                        Err(e) => {
+                            tracing::debug!(workspace = id, "reading git connection: {e:#}");
+                            Git::None
+                        }
+                    }
+                }
+            })
+            .await
+    }
+
+    /// Git status of a workspace's items: `Git::None` when the workspace
+    /// isn't connected, `Git::Failed` when it is but the status can't be read.
+    async fn git_status(&self, id: &str, force: bool) -> Git {
+        let client = self.client.clone();
+        let mut status = self
+            .git_status
+            .get(&[id.to_owned()], force, |id| {
+                let client = client.clone();
+                async move {
+                    let conn = format!("workspaces/{id}/git/connection");
+                    let state = match client.get(&conn).await {
+                        Ok(c) => c["gitConnectionState"].as_str().unwrap_or("").to_owned(),
+                        Err(e) => {
+                            tracing::debug!(workspace = id, "reading git connection: {e:#}");
+                            return Git::None;
+                        }
+                    };
+                    if state.is_empty() || state == "NotConnected" {
+                        return Git::None;
+                    }
+                    match client.get_lro(&format!("workspaces/{id}/git/status")).await {
+                        Ok(status) => Git::Some(status),
+                        Err(e) => {
+                            tracing::warn!(workspace = id, "reading git status: {e:#}");
+                            Git::Failed(format!("{e:#}"))
+                        }
+                    }
+                }
+            })
+            .await;
+        status.remove(id).unwrap_or_default()
+    }
+
     async fn fetch(&self, q: Query, force: bool) -> Result<Vec<Row>> {
         let c = &self.client;
         let ws = q.scope.workspace.as_ref().map(|w| w.id.as_str());
         let folder = q.scope.folder.as_ref().map(|f| f.id.as_str());
         Ok(match q.kind {
             Kind::Workspaces => {
-                let (list, caps) =
-                    futures::join!(c.list("workspaces", "value"), self.capacity_names(force));
-                rows::workspaces(&list?, &caps)
+                let list = async {
+                    let list = c.list("workspaces", "value").await?;
+                    let ids = list.iter().map(rows::id_of).collect();
+                    let git = self.git_links(ids, force).await;
+                    Ok::<_, anyhow::Error>((list, git))
+                };
+                let (list, caps) = futures::join!(list, self.capacity_names(force));
+                let (list, git) = list?;
+                rows::workspaces(&list, &caps, &git)
             }
             Kind::Items => match ws {
                 Some(id) => {
-                    let data = self.workspace(id, force).await?;
+                    let (data, git) =
+                        futures::join!(self.workspace(id, force), self.git_status(id, force));
+                    let data = data?;
                     if q.tree {
-                        rows::items_tree(&data, folder)
+                        rows::items_tree(&data, folder, &git)
                     } else if q.is_flat() {
-                        rows::items_flat(&data, folder, q.item_type.as_deref())
+                        rows::items_flat(&data, folder, q.item_type.as_deref(), &git)
                     } else {
-                        rows::items_level(&data, folder)
+                        rows::items_level(&data, folder, &git)
                     }
                 }
                 None => {
@@ -306,6 +459,7 @@ impl Inner {
         // the write failed halfway.
         if !matches!(action, Action::RunJob { .. } | Action::CancelJob { .. }) {
             self.spaces.lock().unwrap().remove(action.workspace());
+            self.git_status.forget(action.workspace());
         }
         result
     }
@@ -655,6 +809,128 @@ mod tests {
         let inside = src.fetch(q, false).await.unwrap();
         assert_eq!(inside[0].name, "nb");
         // `expect(1)` on each mock is verified when the server drops.
+    }
+
+    async fn mount_items(server: &MockServer) {
+        Mock::given(path("/workspaces/w1/folders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": []})))
+            .mount(server)
+            .await;
+        Mock::given(path("/workspaces/w1/items"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"id": "i1", "displayName": "load", "type": "Notebook"},
+                {"id": "i2", "displayName": "sales", "type": "Report"}
+            ]})))
+            .mount(server)
+            .await;
+        Mock::given(path("/workspaces/w1/git/connection"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "gitConnectionState": "ConnectedAndInitialized",
+                "gitProviderDetails": {"branchName": "main"}
+            })))
+            .mount(server)
+            .await;
+    }
+
+    fn git_cells(rows: &[Row]) -> Vec<(&str, &str)> {
+        rows.iter()
+            .map(|r| (r.name.as_str(), r.cells[2].as_str()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn items_show_git_status_from_a_long_running_operation() {
+        let server = MockServer::start().await;
+        mount_items(&server).await;
+        let op = format!("{}/operations/op1", server.uri());
+        Mock::given(path("/workspaces/w1/git/status"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("location", op.as_str())
+                    .insert_header("retry-after", "0"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/operations/op1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "Succeeded"})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/operations/op1/result"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"changes": [{
+                    "itemMetadata": {"itemIdentifier": {"objectId": "i1"}},
+                    "workspaceChange": "Modified", "conflictType": "None"
+                }]})),
+            )
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let q = Query::new(Kind::Items, ws_scope());
+        let rows = src.fetch(q.clone(), false).await.unwrap();
+        assert_eq!(
+            git_cells(&rows),
+            [("load", "uncommitted"), ("sales", "synced")]
+        );
+        // Reused while navigating; `expect(1)` is checked when the server drops.
+        src.fetch(q, false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn slow_git_status_fills_in_on_a_later_fetch() {
+        let server = MockServer::start().await;
+        mount_items(&server).await;
+        Mock::given(path("/workspaces/w1/git/status"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"changes": []}))
+                    .set_delay(GIT_WAIT + Duration::from_millis(300)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let q = Query::new(Kind::Items, ws_scope());
+        let rows = src.fetch(q.clone(), false).await.unwrap();
+        assert_eq!(git_cells(&rows), [("load", "…"), ("sales", "…")]);
+        assert!(rows.iter().all(|r| r.loading));
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let rows = src.fetch(q, false).await.unwrap();
+        assert_eq!(git_cells(&rows), [("load", "synced"), ("sales", "synced")]);
+        assert!(rows.iter().all(|r| !r.loading));
+    }
+
+    #[tokio::test]
+    async fn workspaces_show_git_branches_and_skip_unreadable_ones() {
+        let server = MockServer::start().await;
+        Mock::given(path("/workspaces"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [
+                {"id": "w1", "displayName": "A", "type": "Workspace"},
+                {"id": "w2", "displayName": "B", "type": "Workspace"}
+            ]})))
+            .mount(&server)
+            .await;
+        Mock::given(path("/workspaces/w1/git/connection"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "gitConnectionState": "ConnectedAndInitialized",
+                "gitProviderDetails": {"branchName": "main"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(path("/workspaces/w2/git/connection"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(json!({"errorCode": "InsufficientPrivileges"})),
+            )
+            .mount(&server)
+            .await;
+        let src = source(&server).await;
+        let rows = src
+            .fetch(Query::new(Kind::Workspaces, Scope::default()), false)
+            .await
+            .unwrap();
+        let git: Vec<&str> = rows.iter().map(|r| r.cells[3].as_str()).collect();
+        assert_eq!(git, ["main", ""]);
     }
 
     fn ws_scope() -> Scope {

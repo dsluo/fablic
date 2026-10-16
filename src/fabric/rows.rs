@@ -19,6 +19,11 @@ fn at<'a>(v: &'a Value, ptr: &str) -> &'a str {
     v.pointer(ptr).and_then(Value::as_str).unwrap_or("")
 }
 
+/// An API object's `id`.
+pub fn id_of(v: &Value) -> String {
+    s(v, "id").to_owned()
+}
+
 fn or_dash(x: &str) -> String {
     if x.is_empty() {
         "-".into()
@@ -68,7 +73,85 @@ impl WsData {
     }
 }
 
-pub fn workspaces(list: &[Value], capacities: &[Value]) -> Vec<Row> {
+/// What fablic knows about a workspace's Git connection (workspace list) or
+/// its items' Git status (items views). Both are slower than the listing they
+/// decorate, so they can still be loading when the rows are built.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Git {
+    /// Still being fetched; a later refresh fills it in.
+    Loading,
+    /// Not connected, or not something this account can see.
+    #[default]
+    None,
+    /// Asking failed; describe says why.
+    Failed(String),
+    /// The `git/connection` or `git/status` response.
+    Some(Value),
+}
+
+/// Item types Fabric lists but never syncs to Git, so having no change
+/// doesn't make them synced.
+const NOT_IN_GIT: &[&str] = &["SQLEndpoint", "Dashboard"];
+
+impl Git {
+    /// The workspace list's GIT cell: the connected branch, or `-` when the
+    /// workspace isn't connected.
+    fn connection_cell(&self) -> String {
+        match self {
+            Git::Loading => "…".into(),
+            Git::None | Git::Failed(_) => String::new(),
+            Git::Some(c) if s(c, "gitConnectionState") == "NotConnected" => "-".into(),
+            Git::Some(c) => match at(c, "/gitProviderDetails/branchName") {
+                "" => "connected".into(),
+                b => b.into(),
+            },
+        }
+    }
+
+    /// Changes in a `git/status` response by item id. Items deleted from the
+    /// workspace have no object id and can't match a row.
+    fn changes(&self) -> HashMap<&str, &Value> {
+        let Git::Some(status) = self else {
+            return HashMap::new();
+        };
+        status["changes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| (at(c, "/itemMetadata/itemIdentifier/objectId"), c))
+            .filter(|(id, _)| !id.is_empty())
+            .collect()
+    }
+
+    /// An item's GIT cell, plus what describe should show about it.
+    fn item_cell(&self, changes: &HashMap<&str, &Value>, item: &Value) -> (String, Value) {
+        match self {
+            Git::Loading => ("…".into(), json!({})),
+            Git::None => (String::new(), json!({})),
+            Git::Failed(e) => ("?".into(), json!({"gitError": e})),
+            Git::Some(_) => match changes.get(s(item, "id")) {
+                Some(c) => (change_label(c).into(), json!({"gitStatus": c})),
+                None if NOT_IN_GIT.contains(&s(item, "type")) => (String::new(), json!({})),
+                None => ("synced".into(), json!({})),
+            },
+        }
+    }
+}
+
+/// How the Fabric portal sums up an item change: changed on both sides is a
+/// conflict, changed in Git needs an update, changed here needs a commit.
+fn change_label(c: &Value) -> &'static str {
+    if s(c, "conflictType") == "Conflict" {
+        "conflict"
+    } else if !s(c, "remoteChange").is_empty() {
+        "update"
+    } else {
+        "uncommitted"
+    }
+}
+
+/// `git` holds the Git connection of each workspace, by id.
+pub fn workspaces(list: &[Value], capacities: &[Value], git: &HashMap<String, Git>) -> Vec<Row> {
     let caps: HashMap<&str, &str> = capacities
         .iter()
         .map(|c| (s(c, "id"), s(c, "displayName")))
@@ -78,17 +161,26 @@ pub fn workspaces(list: &[Value], capacities: &[Value]) -> Vec<Row> {
         .map(|w| {
             let cap_id = s(w, "capacityId");
             let cap = caps.get(cap_id).copied().unwrap_or(cap_id);
-            Row::new(
+            let link = git.get(s(w, "id")).cloned().unwrap_or_default();
+            let raw = match &link {
+                Git::Some(c) => with(w, json!({"git": c})),
+                Git::Failed(e) => with(w, json!({"gitError": e})),
+                _ => w.clone(),
+            };
+            let mut row = Row::new(
                 s(w, "id"),
                 s(w, "displayName"),
                 vec![
                     s(w, "displayName").into(),
                     s(w, "type").into(),
                     or_dash(cap),
+                    link.connection_cell(),
                     s(w, "id").into(),
                 ],
             )
-            .raw(w.clone())
+            .raw(raw);
+            row.loading = link == Git::Loading;
+            row
         })
         .collect();
     rows.sort_by_key(|r| r.name.to_lowercase());
@@ -104,6 +196,7 @@ fn folder_row(f: &Value, path: &str) -> Row {
             format!("▸ {name}"),
             "Folder".into(),
             String::new(),
+            String::new(),
             s(f, "id").into(),
         ],
     )
@@ -112,7 +205,7 @@ fn folder_row(f: &Value, path: &str) -> Row {
 }
 
 /// One level of the folder tree: subfolders first, then the items directly in it.
-pub fn items_level(data: &WsData, folder: Option<&str>) -> Vec<Row> {
+pub fn items_level(data: &WsData, folder: Option<&str>, git: &Git) -> Vec<Row> {
     let paths = data.folder_paths();
     let here = |parent: &str| match folder {
         Some(id) => parent == id,
@@ -125,34 +218,39 @@ pub fn items_level(data: &WsData, folder: Option<&str>) -> Vec<Row> {
         .map(|f| folder_row(f, paths.get(s(f, "id")).map_or("", String::as_str)))
         .collect();
     folders.sort_by_key(|r| r.name.to_lowercase());
+    let changes = git.changes();
     let mut items: Vec<Row> = data
         .items
         .iter()
         .filter(|i| here(s(i, "folderId")))
-        .map(item_row)
+        .map(|i| item_row(i, git, &changes))
         .collect();
     items.sort_by_key(|r| r.name.to_lowercase());
     folders.extend(items);
     folders
 }
 
-fn item_row(i: &Value) -> Row {
-    Row::new(
+fn item_row(i: &Value, git: &Git, changes: &HashMap<&str, &Value>) -> Row {
+    let (cell, extra) = git.item_cell(changes, i);
+    let mut row = Row::new(
         s(i, "id"),
         s(i, "displayName"),
         vec![
             s(i, "displayName").into(),
             s(i, "type").into(),
+            cell,
             s(i, "description").into(),
             s(i, "id").into(),
         ],
     )
-    .raw(i.clone())
+    .raw(with(i, extra));
+    row.loading = *git == Git::Loading;
+    row
 }
 
 /// Every folder and item at or below `folder` as one tree: in each folder,
 /// subfolders first, then its items. Items are leaves.
-pub fn items_tree(data: &WsData, folder: Option<&str>) -> Vec<Row> {
+pub fn items_tree(data: &WsData, folder: Option<&str>, git: &Git) -> Vec<Row> {
     let paths = data.folder_paths();
     let mut folders: Vec<(Row, String)> = data
         .folders
@@ -163,10 +261,11 @@ pub fn items_tree(data: &WsData, folder: Option<&str>) -> Vec<Row> {
         })
         .collect();
     folders.sort_by_key(|(r, _)| r.name.to_lowercase());
+    let changes = git.changes();
     let mut items: Vec<(Row, String)> = data
         .items
         .iter()
-        .map(|i| (item_row(i), s(i, "folderId").to_owned()))
+        .map(|i| (item_row(i, git, &changes), s(i, "folderId").to_owned()))
         .collect();
     items.sort_by_key(|(r, _)| r.name.to_lowercase());
     folders.extend(items);
@@ -205,8 +304,14 @@ fn branch(
 }
 
 /// Every item at or below `folder`, with its folder path, optionally of one type.
-pub fn items_flat(data: &WsData, folder: Option<&str>, item_type: Option<&str>) -> Vec<Row> {
+pub fn items_flat(
+    data: &WsData,
+    folder: Option<&str>,
+    item_type: Option<&str>,
+    git: &Git,
+) -> Vec<Row> {
     let paths = data.folder_paths();
+    let changes = git.changes();
     let prefix = folder.and_then(|id| paths.get(id)).cloned();
     let mut rows: Vec<Row> = data
         .items
@@ -219,20 +324,23 @@ pub fn items_flat(data: &WsData, folder: Option<&str>, item_type: Option<&str>) 
             {
                 return None;
             }
-            Some(
-                Row::new(
-                    s(i, "id"),
-                    s(i, "displayName"),
-                    vec![
-                        s(i, "displayName").into(),
-                        s(i, "type").into(),
-                        format!("/{path}"),
-                        s(i, "description").into(),
-                        s(i, "id").into(),
-                    ],
-                )
-                .raw(with(i, json!({"folderPath": path}))),
+            let (cell, mut extra) = git.item_cell(&changes, i);
+            extra["folderPath"] = path.clone().into();
+            let mut row = Row::new(
+                s(i, "id"),
+                s(i, "displayName"),
+                vec![
+                    s(i, "displayName").into(),
+                    s(i, "type").into(),
+                    format!("/{path}"),
+                    cell,
+                    s(i, "description").into(),
+                    s(i, "id").into(),
+                ],
             )
+            .raw(with(i, extra));
+            row.loading = *git == Git::Loading;
+            Some(row)
         })
         .collect();
     rows.sort_by(|a, b| {
@@ -246,7 +354,7 @@ pub fn items_all(spaces: &[(Value, WsData)], item_type: Option<&str>) -> Vec<Row
     let mut rows = Vec::new();
     for (ws, data) in spaces {
         let ws_name = s(ws, "displayName");
-        for r in items_flat(data, None, item_type) {
+        for r in items_flat(data, None, item_type, &Git::None) {
             let folder = r.cells[2].clone();
             rows.push(Row {
                 cells: vec![
@@ -832,12 +940,18 @@ mod tests {
     #[test]
     fn levels_list_folders_first() {
         let d = data();
-        let root = items_level(&d, None);
+        let root = items_level(&d, None, &Git::None);
         assert_eq!(names(&root), ["archive", "ingest", "readme"]);
         assert!(root[0].dir && !root[2].dir);
         assert_eq!(root[1].field("path"), Some("ingest"));
-        assert_eq!(names(&items_level(&d, Some("f1"))), ["shop", "load"]);
-        assert_eq!(items_level(&d, Some("f2"))[0].field("path"), None);
+        assert_eq!(
+            names(&items_level(&d, Some("f1"), &Git::None)),
+            ["shop", "load"]
+        );
+        assert_eq!(
+            items_level(&d, Some("f2"), &Git::None)[0].field("path"),
+            None
+        );
     }
 
     #[test]
@@ -850,7 +964,7 @@ mod tests {
             pairs.iter().map(|&(d, n)| (d, n.to_owned())).collect()
         };
         assert_eq!(
-            shape(&items_tree(&d, None)),
+            shape(&items_tree(&d, None, &Git::None)),
             want(&[
                 (0, "archive"),
                 (1, "old"),
@@ -861,7 +975,7 @@ mod tests {
                 (0, "readme"),
             ])
         );
-        let below = items_tree(&d, Some("f1"));
+        let below = items_tree(&d, Some("f1"), &Git::None);
         assert_eq!(
             shape(&below),
             want(&[(0, "shop"), (1, "extract"), (0, "load")])
@@ -874,14 +988,14 @@ mod tests {
     fn flat_covers_subtree_and_type() {
         let d = data();
         assert_eq!(
-            names(&items_flat(&d, None, None)),
+            names(&items_flat(&d, None, None, &Git::None)),
             ["readme", "old", "load", "extract"]
         );
         assert_eq!(
-            names(&items_flat(&d, Some("f1"), None)),
+            names(&items_flat(&d, Some("f1"), None, &Git::None)),
             ["load", "extract"]
         );
-        let nb = items_flat(&d, None, Some("notebook"));
+        let nb = items_flat(&d, None, Some("notebook"), &Git::None);
         assert_eq!(names(&nb), ["old", "load", "extract"]);
         assert_eq!(nb[2].cells[2], "/ingest/shop");
     }
@@ -1036,7 +1150,93 @@ mod tests {
         let rows = workspaces(
             &[json!({"id": "w", "displayName": "B", "type": "Workspace", "capacityId": "c"})],
             &[json!({"id": "c", "displayName": "Prod F64"})],
+            &HashMap::new(),
         );
         assert_eq!(rows[0].cells[2], "Prod F64");
+    }
+
+    #[test]
+    fn workspaces_show_git_branch() {
+        let ws = |id: &str| json!({"id": id, "displayName": id, "type": "Workspace"});
+        let conn = json!({"gitConnectionState": "ConnectedAndInitialized",
+                          "gitProviderDetails": {"branchName": "main"}});
+        let off = json!({"gitConnectionState": "NotConnected", "gitProviderDetails": null});
+        let git = HashMap::from([
+            ("a".to_owned(), Git::Some(conn.clone())),
+            ("b".to_owned(), Git::Some(off)),
+            ("c".to_owned(), Git::Loading),
+            ("d".to_owned(), Git::None),
+        ]);
+        let rows = workspaces(&[ws("a"), ws("b"), ws("c"), ws("d")], &[], &git);
+        let cells: Vec<&str> = rows.iter().map(|r| r.cells[3].as_str()).collect();
+        assert_eq!(cells, ["main", "-", "…", ""]);
+        assert_eq!(rows[0].raw["git"], conn, "describe shows the connection");
+        let loading: Vec<bool> = rows.iter().map(|r| r.loading).collect();
+        assert_eq!(loading, [false, false, true, false]);
+    }
+
+    #[test]
+    fn items_show_git_status() {
+        let item = |id: &str, t: &str| json!({"id": id, "displayName": id, "type": t});
+        let d = WsData {
+            folders: vec![json!({"id": "f", "displayName": "f"})],
+            items: vec![
+                item("added", "Notebook"),
+                item("both", "Notebook"),
+                item("endpoint", "SQLEndpoint"),
+                item("remote", "Report"),
+                item("same", "Notebook"),
+            ],
+        };
+        let change = |id: &str, extra: Value| {
+            with(
+                &json!({"itemMetadata": {"itemIdentifier": {"objectId": id}},
+                        "conflictType": "None"}),
+                extra,
+            )
+        };
+        let git = Git::Some(json!({"changes": [
+            change("added", json!({"workspaceChange": "Added"})),
+            change("both", json!({"workspaceChange": "Modified", "remoteChange": "Modified",
+                                  "conflictType": "Conflict"})),
+            change("remote", json!({"remoteChange": "Deleted"})),
+            // Gone from the workspace: no object id, matches nothing.
+            json!({"itemMetadata": {"itemIdentifier": {"logicalId": "x"}},
+                   "remoteChange": "Added", "conflictType": "None"}),
+        ]}));
+        let rows = items_level(&d, None, &git);
+        let cells: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|r| (r.name.as_str(), r.cells[2].as_str()))
+            .collect();
+        assert_eq!(
+            cells,
+            [
+                ("f", ""),
+                ("added", "uncommitted"),
+                ("both", "conflict"),
+                ("endpoint", ""),
+                ("remote", "update"),
+                ("same", "synced"),
+            ]
+        );
+        assert_eq!(rows[2].raw["gitStatus"]["conflictType"], "Conflict");
+        let flat = items_flat(&d, None, None, &git);
+        assert_eq!(flat[0].cells[3], "uncommitted", "after the folder column");
+        let failed = items_level(&d, None, &Git::Failed("no".into()));
+        assert_eq!(
+            (failed[1].cells[2].as_str(), &failed[1].raw["gitError"]),
+            ("?", &json!("no"))
+        );
+        assert!(
+            items_tree(&d, None, &Git::Loading)
+                .iter()
+                .any(|r| r.loading)
+        );
+        assert!(
+            items_level(&d, None, &Git::None)
+                .iter()
+                .all(|r| r.cells[2].is_empty())
+        );
     }
 }

@@ -68,8 +68,8 @@ impl Kind {
 
     pub fn columns(self) -> &'static [&'static str] {
         match self {
-            Kind::Workspaces => &["NAME", "TYPE", "CAPACITY", "ID"],
-            Kind::Items => &["NAME", "TYPE", "DESCRIPTION", "ID"],
+            Kind::Workspaces => &["NAME", "TYPE", "CAPACITY", "GIT", "ID"],
+            Kind::Items => &["NAME", "TYPE", "GIT", "DESCRIPTION", "ID"],
             Kind::Jobs => &[
                 "STATUS",
                 "JOB TYPE",
@@ -95,7 +95,7 @@ impl Kind {
             Kind::Items if q.scope.workspace.is_none() => {
                 &["NAME", "TYPE", "WORKSPACE", "FOLDER", "ID"]
             }
-            Kind::Items if q.is_flat() => &["NAME", "TYPE", "FOLDER", "DESCRIPTION", "ID"],
+            Kind::Items if q.is_flat() => &["NAME", "TYPE", "FOLDER", "GIT", "DESCRIPTION", "ID"],
             // Runs of every item in a workspace say which item they belong to.
             Kind::Jobs if q.scope.item.is_none() => &[
                 "ITEM",
@@ -288,6 +288,9 @@ pub struct Row {
     /// How far down a tree view (`T`) the row sits; 0 at its top and in
     /// every other view.
     pub depth: usize,
+    /// A cell is still waiting on a slower request (Git state); the view
+    /// refreshes until it arrives.
+    pub loading: bool,
     /// The API object the row was built from, shown by describe.
     pub raw: Value,
 }
@@ -301,6 +304,7 @@ impl Row {
             health: Health::Neutral,
             dir: false,
             depth: 0,
+            loading: false,
             raw: Value::Null,
         }
     }

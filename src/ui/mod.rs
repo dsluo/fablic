@@ -523,6 +523,21 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_git_items() {
+        let mut app = fake_app();
+        steps(
+            &mut app,
+            &[
+                KeyCode::Char('j'),
+                KeyCode::Char('j'),
+                KeyCode::Enter,
+                KeyCode::Char('F'),
+            ],
+        );
+        insta::assert_snapshot!(render(&mut app));
+    }
+
+    #[test]
     fn snapshot_tree() {
         let mut app = fake_app();
         steps(

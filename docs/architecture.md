@@ -223,7 +223,9 @@ selection jump.
 `on_tick` runs every second. A jobs view refreshes itself every 5 s
 (`LIVE_REFRESH`) while any run is pending, or for 60 s after the user starts
 or cancels a run (`live_until`, set from `jobs.rs`), so a freshly queued run
-shows up without pressing `ctrl-r`.
+shows up without pressing `ctrl-r`. Any view with a `loading` row (Git
+state still being fetched) refreshes every 5 s too, without `force`, so the
+source answers from its caches once the background requests finish.
 
 ## Data model: `Kind`, `Query`, `Scope` and `Row`
 
@@ -231,8 +233,8 @@ shows up without pressing `ctrl-r`.
 
 | Kind | Needs in scope | Source |
 |---|---|---|
-| `Workspaces` | nothing | `GET /workspaces` + capacity names |
-| `Items` | optional workspace / folder | `GET /workspaces/{id}/items` and `/folders` (recursive) |
+| `Workspaces` | nothing | `GET /workspaces` + capacity names + each one's `git/connection` |
+| `Items` | optional workspace / folder | `GET /workspaces/{id}/items` and `/folders` (recursive), plus `git/status` in one workspace |
 | `Jobs` | workspace or item | job instances, plus Livy sessions for cancellations |
 | `Schedules` | item | `GET .../jobs/{jobType}/schedules` |
 | `OneLake` | item | OneLake DFS directory listing |
@@ -253,7 +255,8 @@ what lets it serve as the cache key and as the "same view?" test in
 
 A `Row` is what every table shows: an `id`, a `name`, display `cells`, a
 coarse `Health` used for colouring, a `dir` flag for containers that `enter`
-opens, and the `raw` JSON the row was built from. `d` (describe) renders
+opens, a `loading` flag for cells still waiting on a slower request, and the
+`raw` JSON the row was built from. `d` (describe) renders
 `raw` as YAML, so every view gets a detail view for free.
 
 ## Navigation
@@ -382,6 +385,8 @@ Ambiguous or missing matches are reported instead of guessed.
 | `WS_TTL` | 60 s | One recursive folder + item listing per workspace is reused while walking its folder tree, flattening, and listing jobs |
 | `CAP_TTL` | 10 min | Capacity names change rarely, and listing them can take seconds |
 | `CAP_WAIT` | 1.5 s | The workspace list waits at most this long for capacity names; a slow listing keeps running in the background and fills the cache for next time |
+| `GIT_TTL` | 10 min | Git connections, one request per workspace, change rarely |
+| `GIT_WAIT` | 1.5 s | A listing waits at most this long for Git state; the rest loads in the background (`FAN_OUT` at a time) and shows as `…` |
 | `FAN_OUT` | 6 | Parallel workspace listings for items across all workspaces |
 | `JOB_FAN_OUT` | 4 | Parallel per-item run listings for a workspace jobs view |
 | `SESSION_PAGES` | 3 | Pages of Livy sessions read to detect cancelled Spark runs |
@@ -412,6 +417,15 @@ if the write failed partway.
   are the only record of a user cancellation, so `rows::mark_cancelled`
   cross-references them. A failure to list sessions is logged and the runs
   are shown as Fabric reports them.
+- **Git state** is the GIT column. On the workspace list it is each
+  workspace's connected branch (`-` when not connected, blank when the
+  account can't read it: Git needs contributor). In one workspace's items it
+  is the item's `git/status`: `uncommitted`, `update`, `conflict`, or
+  `synced` for items with no change (except types Fabric never syncs).
+  Status is a long-running operation and needs the caller's Git credentials;
+  when it fails the cells show `?` and describe says why. Both go through
+  `Slow`, a per-workspace cache that waits `GIT_WAIT`, then keeps loading in
+  the background. Writes forget the workspace's status.
 - **Definitions** (`y`) call `getDefinition` as a long-running operation and
   base64-decode each part; binary parts are shown as a byte count.
 

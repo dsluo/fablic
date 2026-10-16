@@ -159,12 +159,22 @@ impl Client {
 
     /// POST that may run as a long-running operation. Returns the final result body.
     pub async fn post_lro(&self, path: &str, body: Option<Value>) -> Result<Value> {
+        self.lro(Method::POST, path, body).await
+    }
+
+    /// GET that may run as a long-running operation (Git status).
+    pub async fn get_lro(&self, path: &str) -> Result<Value> {
+        self.lro(Method::GET, path, None).await
+    }
+
+    async fn lro(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
         let url = self.url(path);
         let resp = self
             .send(|| {
-                let req = self.http.request(Method::POST, &url);
+                let req = self.http.request(method.clone(), &url);
                 match &body {
                     Some(b) => req.json(b),
+                    None if method == Method::GET => req,
                     None => req.header("content-length", "0"),
                 }
             })
