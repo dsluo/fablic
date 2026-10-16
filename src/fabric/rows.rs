@@ -9,7 +9,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 
 use serde_json::{Value, json};
 
-use crate::resources::{Health, Row};
+use crate::resources::{Health, Row, Tint};
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
@@ -123,31 +123,46 @@ impl Git {
             .collect()
     }
 
-    /// An item's GIT cell, plus what describe should show about it.
-    fn item_cell(&self, changes: &HashMap<&str, &Value>, item: &Value) -> (String, Value) {
+    /// An item's GIT cell, its colour, and what describe should show about it.
+    fn item_cell(
+        &self,
+        changes: &HashMap<&str, &Value>,
+        item: &Value,
+    ) -> (String, Option<Tint>, Value) {
         match self {
-            Git::Loading => ("…".into(), json!({})),
-            Git::None => (String::new(), json!({})),
-            Git::Failed(e) => ("?".into(), json!({"gitError": e})),
+            Git::Loading => ("…".into(), Some(Tint::Faint), json!({})),
+            Git::None => (String::new(), None, json!({})),
+            Git::Failed(e) => ("?".into(), Some(Tint::Faint), json!({"gitError": e})),
             Git::Some(_) => match changes.get(s(item, "id")) {
-                Some(c) => (change_label(c).into(), json!({"gitStatus": c})),
-                None if NOT_IN_GIT.contains(&s(item, "type")) => (String::new(), json!({})),
-                None => ("synced".into(), json!({})),
+                Some(c) => {
+                    let (label, tint) = change_mark(c);
+                    (label, Some(tint), json!({"gitStatus": c}))
+                }
+                None if NOT_IN_GIT.contains(&s(item, "type")) => (String::new(), None, json!({})),
+                None => ("synced".into(), Some(Tint::Ok), json!({})),
             },
         }
     }
 }
 
-/// How the Fabric portal sums up an item change: changed on both sides is a
-/// conflict, changed in Git needs an update, changed here needs a commit.
-fn change_label(c: &Value) -> &'static str {
+/// An item change as the GIT column shows it. Changed on both sides is a
+/// conflict; otherwise `↑` is a workspace change waiting to be committed and
+/// `↓` a change in Git waiting to be updated from, followed by what changed.
+fn change_mark(c: &Value) -> (String, Tint) {
     if s(c, "conflictType") == "Conflict" {
-        "conflict"
-    } else if !s(c, "remoteChange").is_empty() {
-        "update"
-    } else {
-        "uncommitted"
+        return ("conflict".into(), Tint::Conflict);
     }
+    let (arrow, change) = match s(c, "remoteChange") {
+        "" => ("↑", s(c, "workspaceChange")),
+        remote => ("↓", remote),
+    };
+    let (word, tint) = match change {
+        "Added" => ("new".to_owned(), Tint::New),
+        "Deleted" => ("deleted".to_owned(), Tint::Gone),
+        "Modified" => ("modified".to_owned(), Tint::Changed),
+        other => (other.to_lowercase(), Tint::Changed),
+    };
+    (format!("{arrow} {word}"), tint)
 }
 
 /// `git` holds the Git connection of each workspace, by id.
@@ -167,6 +182,8 @@ pub fn workspaces(list: &[Value], capacities: &[Value], git: &HashMap<String, Gi
                 Git::Failed(e) => with(w, json!({"gitError": e})),
                 _ => w.clone(),
             };
+            let cell = link.connection_cell();
+            let faint = matches!(cell.as_str(), "-" | "…");
             let mut row = Row::new(
                 s(w, "id"),
                 s(w, "displayName"),
@@ -174,11 +191,14 @@ pub fn workspaces(list: &[Value], capacities: &[Value], git: &HashMap<String, Gi
                     s(w, "displayName").into(),
                     s(w, "type").into(),
                     or_dash(cap),
-                    link.connection_cell(),
+                    cell,
                     s(w, "id").into(),
                 ],
             )
             .raw(raw);
+            if faint {
+                row = row.tint(3, Tint::Faint);
+            }
             row.loading = link == Git::Loading;
             row
         })
@@ -231,7 +251,7 @@ pub fn items_level(data: &WsData, folder: Option<&str>, git: &Git) -> Vec<Row> {
 }
 
 fn item_row(i: &Value, git: &Git, changes: &HashMap<&str, &Value>) -> Row {
-    let (cell, extra) = git.item_cell(changes, i);
+    let (cell, tint, extra) = git.item_cell(changes, i);
     let mut row = Row::new(
         s(i, "id"),
         s(i, "displayName"),
@@ -244,6 +264,9 @@ fn item_row(i: &Value, git: &Git, changes: &HashMap<&str, &Value>) -> Row {
         ],
     )
     .raw(with(i, extra));
+    if let Some(t) = tint {
+        row = row.tint(2, t);
+    }
     row.loading = *git == Git::Loading;
     row
 }
@@ -324,7 +347,7 @@ pub fn items_flat(
             {
                 return None;
             }
-            let (cell, mut extra) = git.item_cell(&changes, i);
+            let (cell, tint, mut extra) = git.item_cell(&changes, i);
             extra["folderPath"] = path.clone().into();
             let mut row = Row::new(
                 s(i, "id"),
@@ -339,6 +362,9 @@ pub fn items_flat(
                 ],
             )
             .raw(with(i, extra));
+            if let Some(t) = tint {
+                row = row.tint(3, t);
+            }
             row.loading = *git == Git::Loading;
             Some(row)
         })
@@ -365,6 +391,7 @@ pub fn items_all(spaces: &[(Value, WsData)], item_type: Option<&str>) -> Vec<Row
                     r.id.clone(),
                 ],
                 raw: with(&r.raw, json!({"workspaceName": ws_name})),
+                tints: Vec::new(),
                 ..r
             });
         }
@@ -1186,6 +1213,7 @@ mod tests {
                 item("endpoint", "SQLEndpoint"),
                 item("remote", "Report"),
                 item("same", "Notebook"),
+                item("synced", "Notebook"),
             ],
         };
         let change = |id: &str, extra: Value| {
@@ -1200,29 +1228,36 @@ mod tests {
             change("both", json!({"workspaceChange": "Modified", "remoteChange": "Modified",
                                   "conflictType": "Conflict"})),
             change("remote", json!({"remoteChange": "Deleted"})),
+            change("same", json!({"workspaceChange": "Modified", "remoteChange": "Modified",
+                                  "conflictType": "SameChanges"})),
             // Gone from the workspace: no object id, matches nothing.
             json!({"itemMetadata": {"itemIdentifier": {"logicalId": "x"}},
                    "remoteChange": "Added", "conflictType": "None"}),
         ]}));
         let rows = items_level(&d, None, &git);
-        let cells: Vec<(&str, &str)> = rows
+        let cells: Vec<(&str, &str, Option<Tint>)> = rows
             .iter()
-            .map(|r| (r.name.as_str(), r.cells[2].as_str()))
+            .map(|r| {
+                let tint = r.tints.iter().find(|(i, _)| *i == 2).map(|(_, t)| *t);
+                (r.name.as_str(), r.cells[2].as_str(), tint)
+            })
             .collect();
         assert_eq!(
             cells,
             [
-                ("f", ""),
-                ("added", "uncommitted"),
-                ("both", "conflict"),
-                ("endpoint", ""),
-                ("remote", "update"),
-                ("same", "synced"),
+                ("f", "", None),
+                ("added", "↑ new", Some(Tint::New)),
+                ("both", "conflict", Some(Tint::Conflict)),
+                ("endpoint", "", None),
+                ("remote", "↓ deleted", Some(Tint::Gone)),
+                ("same", "↓ modified", Some(Tint::Changed)),
+                ("synced", "synced", Some(Tint::Ok)),
             ]
         );
         assert_eq!(rows[2].raw["gitStatus"]["conflictType"], "Conflict");
         let flat = items_flat(&d, None, None, &git);
-        assert_eq!(flat[0].cells[3], "uncommitted", "after the folder column");
+        assert_eq!(flat[0].cells[3], "↑ new", "after the folder column");
+        assert_eq!(flat[0].tints, [(3, Tint::New)]);
         let failed = items_level(&d, None, &Git::Failed("no".into()));
         assert_eq!(
             (failed[1].cells[2].as_str(), &failed[1].raw["gitError"]),

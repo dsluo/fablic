@@ -870,7 +870,7 @@ mod tests {
         let rows = src.fetch(q.clone(), false).await.unwrap();
         assert_eq!(
             git_cells(&rows),
-            [("load", "uncommitted"), ("sales", "synced")]
+            [("load", "↑ modified"), ("sales", "synced")]
         );
         // Reused while navigating; `expect(1)` is checked when the server drops.
         src.fetch(q, false).await.unwrap();

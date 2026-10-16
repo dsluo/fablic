@@ -277,6 +277,18 @@ impl Health {
     }
 }
 
+/// Colour of a single cell, for columns whose values mean more than the
+/// row's health (Git state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tint {
+    Ok,
+    New,
+    Changed,
+    Gone,
+    Conflict,
+    Faint,
+}
+
 #[derive(Debug, Clone)]
 pub struct Row {
     pub id: String,
@@ -291,6 +303,8 @@ pub struct Row {
     /// A cell is still waiting on a slower request (Git state); the view
     /// refreshes until it arrives.
     pub loading: bool,
+    /// Cells, by index, coloured on their own instead of like the row.
+    pub tints: Vec<(usize, Tint)>,
     /// The API object the row was built from, shown by describe.
     pub raw: Value,
 }
@@ -305,6 +319,7 @@ impl Row {
             dir: false,
             depth: 0,
             loading: false,
+            tints: Vec::new(),
             raw: Value::Null,
         }
     }
@@ -316,6 +331,11 @@ impl Row {
 
     pub fn health(mut self, h: Health) -> Row {
         self.health = h;
+        self
+    }
+
+    pub fn tint(mut self, cell: usize, t: Tint) -> Row {
+        self.tints.push((cell, t));
         self
     }
 

@@ -420,8 +420,12 @@ if the write failed partway.
 - **Git state** is the GIT column. On the workspace list it is each
   workspace's connected branch (`-` when not connected, blank when the
   account can't read it: Git needs contributor). In one workspace's items it
-  is the item's `git/status`: `uncommitted`, `update`, `conflict`, or
-  `synced` for items with no change (except types Fabric never syncs).
+  is the item's `git/status`: `↑ new` / `↑ modified` for workspace changes
+  to commit, `↓ new` / `↓ modified` / `↓ deleted` for Git changes to update
+  from, `conflict`, or `synced` for items with no change (except types
+  Fabric never syncs). Each is coloured on its own through `Row::tints`
+  (new blue, modified yellow, deleted red, conflict bold mauve, synced
+  green), while the rest of the row keeps its usual colour.
   Status is a long-running operation and needs the caller's Git credentials;
   when it fails the cells show `?` and describe says why. Both go through
   `Slow`, a per-workspace cache that waits `GIT_WAIT`, then keeps loading in

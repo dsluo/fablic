@@ -538,6 +538,42 @@ mod tests {
     }
 
     #[test]
+    fn git_cells_are_coloured_by_change() {
+        let mut app = fake_app();
+        steps(
+            &mut app,
+            &[
+                KeyCode::Char('j'),
+                KeyCode::Char('j'),
+                KeyCode::Enter,
+                KeyCode::Char('F'),
+            ],
+        );
+        // Tall enough for every item in the workspace.
+        let mut term = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        term.draw(|f| draw(f, &mut app, &Theme::MOCHA)).unwrap();
+        let buf = term.backend().buffer();
+        let t = Theme::MOCHA;
+        // The colour of the first cell that starts with `label`.
+        let colour = |label: &str| {
+            for y in 0..buf.area.height {
+                let cells: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                let text = cells.concat();
+                if let Some(at) = text.find(&format!("  {label}")) {
+                    let x = text[..at + 2].chars().count() as u16;
+                    return buf[(x, y)].fg;
+                }
+            }
+            panic!("no {label} cell");
+        };
+        assert_eq!(colour("synced"), t.ok);
+        assert_eq!(colour("↑ new"), t.accent);
+        assert_eq!(colour("↑ modified"), t.warn);
+        assert_eq!(colour("conflict"), t.title);
+        assert_eq!(colour("↓ deleted"), t.bad);
+    }
+
+    #[test]
     fn snapshot_tree() {
         let mut app = fake_app();
         steps(

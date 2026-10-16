@@ -90,6 +90,7 @@ pub fn git_status(ws: &str) -> Value {
                 change("it-22", "merge_orders", "Notebook", None, Some("Modified")),
                 change("it-23", "nightly_silver", "DataPipeline", Some("Modified"), Some("Modified")),
                 change("it-32", "settings", "VariableLibrary", Some("Added"), None),
+                change("it-28", "Sales Overview", "Report", None, Some("Deleted")),
             ]
         }),
         _ => json!({

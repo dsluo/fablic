@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Cell, Paragraph, Row, Table};
 
 use crate::app::App;
-use crate::resources::{self, Health, Kind};
+use crate::resources::{self, Health, Kind, Tint};
 use crate::theme::Theme;
 
 pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
@@ -75,17 +75,19 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             Health::Bad => t.bad,
             Health::Neutral => t.text,
         };
-        let cells =
-            r.cells
-                .iter()
-                .enumerate()
-                .map(|(c, text)| match (columns.get(c), lead.get(pos)) {
-                    (_, Some((guide, open))) if c == 0 => {
-                        Cell::from(tree_cell(guide, *open, text, widths[0]))
-                    }
-                    (Some(title), _) if is_path(title) => Cell::from(tail(text, widths[c])),
-                    _ => Cell::from(head(text, widths[c])),
-                });
+        let cells = r.cells.iter().enumerate().map(|(c, text)| {
+            let cell = match (columns.get(c), lead.get(pos)) {
+                (_, Some((guide, open))) if c == 0 => {
+                    Cell::from(tree_cell(guide, *open, text, widths[0]))
+                }
+                (Some(title), _) if is_path(title) => Cell::from(tail(text, widths[c])),
+                _ => Cell::from(head(text, widths[c])),
+            };
+            match r.tints.iter().find(|(i, _)| *i == c) {
+                Some((_, tint)) => cell.style(tint_style(*tint, t)),
+                None => cell,
+            }
+        });
         Row::new(cells).style(Style::new().fg(color))
     });
     let constraints = widths.iter().map(|&w| Constraint::Length(w as u16));
@@ -95,6 +97,19 @@ pub fn draw(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
         .column_spacing(2)
         .row_highlight_style(Style::new().bg(t.select_bg).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(table, area, &mut app.table);
+}
+
+/// A tinted cell's style. Git changes follow the usual colours: new is blue,
+/// modified yellow, deleted red, and a conflict stands out in bold.
+fn tint_style(tint: Tint, t: &Theme) -> Style {
+    match tint {
+        Tint::Ok => Style::new().fg(t.ok),
+        Tint::New => Style::new().fg(t.accent),
+        Tint::Changed => Style::new().fg(t.warn),
+        Tint::Gone => Style::new().fg(t.bad),
+        Tint::Conflict => Style::new().fg(t.title).add_modifier(Modifier::BOLD),
+        Tint::Faint => Style::new().fg(t.faint),
+    }
 }
 
 /// Widest a column may grow. The first column is the name, so it gets a lot;
