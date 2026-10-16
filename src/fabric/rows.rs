@@ -94,17 +94,13 @@ pub enum Git {
 const NOT_IN_GIT: &[&str] = &["SQLEndpoint", "Dashboard"];
 
 impl Git {
-    /// The workspace list's GIT cell: the connected branch, or `-` when the
-    /// workspace isn't connected.
+    /// The workspace list's GIT cell: where the workspace syncs to, `-` when
+    /// it isn't connected.
     fn connection_cell(&self) -> String {
         match self {
             Git::Loading => "…".into(),
             Git::None | Git::Failed(_) => String::new(),
-            Git::Some(c) if s(c, "gitConnectionState") == "NotConnected" => "-".into(),
-            Git::Some(c) => match at(c, "/gitProviderDetails/branchName") {
-                "" => "connected".into(),
-                b => b.into(),
-            },
+            Git::Some(c) => sync_target(c).unwrap_or_else(|| "-".into()),
         }
     }
 
@@ -145,6 +141,24 @@ impl Git {
     }
 }
 
+/// The branch and directory a connected workspace syncs to, written like
+/// git's `rev:path` (`main:/workspace`); just the branch at the repo root.
+fn sync_target(conn: &Value) -> Option<String> {
+    if matches!(s(conn, "gitConnectionState"), "" | "NotConnected") {
+        return None;
+    }
+    let branch = match at(conn, "/gitProviderDetails/branchName") {
+        "" => "?",
+        b => b,
+    };
+    let dir = at(conn, "/gitProviderDetails/directoryName").trim_matches('/');
+    Some(if dir.is_empty() {
+        branch.to_owned()
+    } else {
+        format!("{branch}:/{dir}")
+    })
+}
+
 /// An item change as the GIT column shows it. Changed on both sides is a
 /// conflict; otherwise `↑` is a workspace change waiting to be committed and
 /// `↓` a change in Git waiting to be updated from, followed by what changed.
@@ -178,7 +192,7 @@ pub fn workspaces(list: &[Value], capacities: &[Value], git: &HashMap<String, Gi
             let cap = caps.get(cap_id).copied().unwrap_or(cap_id);
             let link = git.get(s(w, "id")).cloned().unwrap_or_default();
             let raw = match &link {
-                Git::Some(c) => with(w, json!({"git": c})),
+                Git::Some(c) => with(w, json!({"git": c, "gitTarget": sync_target(c)})),
                 Git::Failed(e) => with(w, json!({"gitError": e})),
                 _ => w.clone(),
             };
@@ -1186,20 +1200,25 @@ mod tests {
     fn workspaces_show_git_branch() {
         let ws = |id: &str| json!({"id": id, "displayName": id, "type": "Workspace"});
         let conn = json!({"gitConnectionState": "ConnectedAndInitialized",
-                          "gitProviderDetails": {"branchName": "main"}});
+                          "gitProviderDetails": {"branchName": "main",
+                                                 "directoryName": "/fabric/silver/"}});
+        let root = json!({"gitConnectionState": "Connected",
+                          "gitProviderDetails": {"branchName": "dev", "directoryName": "/"}});
         let off = json!({"gitConnectionState": "NotConnected", "gitProviderDetails": null});
         let git = HashMap::from([
             ("a".to_owned(), Git::Some(conn.clone())),
             ("b".to_owned(), Git::Some(off)),
             ("c".to_owned(), Git::Loading),
             ("d".to_owned(), Git::None),
+            ("e".to_owned(), Git::Some(root)),
         ]);
-        let rows = workspaces(&[ws("a"), ws("b"), ws("c"), ws("d")], &[], &git);
+        let rows = workspaces(&[ws("a"), ws("b"), ws("c"), ws("d"), ws("e")], &[], &git);
         let cells: Vec<&str> = rows.iter().map(|r| r.cells[3].as_str()).collect();
-        assert_eq!(cells, ["main", "-", "…", ""]);
+        assert_eq!(cells, ["main:/fabric/silver", "-", "…", "", "dev"]);
         assert_eq!(rows[0].raw["git"], conn, "describe shows the connection");
+        assert_eq!(rows[0].field("gitTarget"), Some("main:/fabric/silver"));
         let loading: Vec<bool> = rows.iter().map(|r| r.loading).collect();
-        assert_eq!(loading, [false, false, true, false]);
+        assert_eq!(loading, [false, false, true, false, false]);
     }
 
     #[test]

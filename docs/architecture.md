@@ -417,9 +417,12 @@ if the write failed partway.
   are the only record of a user cancellation, so `rows::mark_cancelled`
   cross-references them. A failure to list sessions is logged and the runs
   are shown as Fabric reports them.
-- **Git state** is the GIT column. On the workspace list it is each
-  workspace's connected branch (`-` when not connected, blank when the
-  account can't read it: Git needs contributor). In one workspace's items it
+- **Git state** is the GIT column. On the workspace list it is the branch
+  and directory each workspace syncs to, written like git's `rev:path`
+  (`main:/workspace`, or just `main` at the repo root); `-` when not
+  connected, blank when the account can't read it (Git needs contributor).
+  The header shows the same after the workspace name, read from the cached
+  workspace list. In one workspace's items it
   is the item's `git/status`: `↑ new` / `↑ modified` for workspace changes
   to commit, `↓ new` / `↓ modified` / `↓ deleted` for Git changes to update
   from, `conflict`, or `synced` for items with no change (except types

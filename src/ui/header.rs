@@ -92,6 +92,21 @@ fn workspace(app: &App) -> String {
     }
 }
 
+/// What follows the workspace name: where it syncs to in Git, if anywhere.
+fn workspace_git(app: &App) -> String {
+    app.workspace_git()
+        .map(|g| format!(" (git {g})"))
+        .unwrap_or_default()
+}
+
+/// The workspace name, then its Git target dimmed.
+fn workspace_spans(app: &App, t: &Theme) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(workspace(app), Style::new().fg(t.text)),
+        Span::styled(workspace_git(app), Style::new().fg(t.dim)),
+    ]
+}
+
 pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     if app.compact {
         return draw_compact(f, area, app, t);
@@ -103,7 +118,8 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     f.render_widget(block, area);
 
     // Wide enough for the longest value, but leave at least half for hints and logo.
-    let longest = [workspace(app).chars().count(), app.profile.account.len()]
+    let ws_width = workspace(app).chars().count() + workspace_git(app).chars().count();
+    let longest = [ws_width, app.profile.account.len()]
         .into_iter()
         .max()
         .unwrap_or(0) as u16;
@@ -168,7 +184,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
     let lines = vec![
         Line::from(profile),
         Line::from(vec![label("Account"), value(app.profile.account.clone())]),
-        Line::from(vec![label("Workspace"), value(workspace(app))]),
+        Line::from([vec![label("Workspace")], workspace_spans(app, t)].concat()),
         Line::from(vec![label("Resource"), value(resource)]),
         Line::from(vec![label("Count"), value(count)]),
     ];
@@ -213,8 +229,9 @@ fn draw_compact(f: &mut Frame, area: Rect, app: &App, t: &Theme) {
                 .fg(app.profile.color.unwrap_or(t.accent))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("  {}", workspace(app)), Style::new().fg(t.text)),
+        Span::raw("  "),
     ];
+    spans.extend(workspace_spans(app, t));
     if app.profile.readonly {
         spans.push(Span::styled("  [read-only]", Style::new().fg(t.bad)));
     }

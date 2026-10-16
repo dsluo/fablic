@@ -26,6 +26,18 @@ impl App {
             .map_or(&[], |s| &s.recent)
     }
 
+    /// Where the view's workspace syncs to in Git (`main:/workspace`), as
+    /// the cached workspace list last saw it.
+    pub fn workspace_git(&self) -> Option<&str> {
+        let ws = self.frame.query.scope.workspace.as_ref()?;
+        let list = Query::new(Kind::Workspaces, Scope::default());
+        self.cache
+            .get(&(self.profile.account.clone(), list))?
+            .iter()
+            .find(|r| r.id == ws.id)?
+            .field("gitTarget")
+    }
+
     pub fn active_workspace(&self) -> Option<&Ref> {
         self.spaces
             .get(&self.profile.account)

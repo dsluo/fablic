@@ -3,11 +3,11 @@ source: src/ui/mod.rs
 expression: render(&mut app)
 ---
 "╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮"
-"│Profile    fake                         <0> all           <enter> open      <m/p> move                      │"
-"│Account    me@example.com               <1> Urban2 Silver <y> definition    <ctrl-d> delete                 │"
-"│Workspace  Urban2 Silver                                  <r> run           <:> command                     │"
-"│Resource   items                                          <F/T> flat/tree   </> filter                      │"
-"│Count      13                                             <e> rename        <?> help                        │"
+"│Profile    fake                                 <0> all           <enter> open      <m/p> move              │"
+"│Account    me@example.com                       <1> Urban2 Silver <y> definition    <ctrl-d> delete         │"
+"│Workspace  Urban2 Silver (git main:/workspace)                    <r> run           <:> command             │"
+"│Resource   items                                                  <F/T> flat/tree   </> filter              │"
+"│Count      13                                                     <e> rename        <?> help                │"
 "╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 "╭───────────────────────────────────────── items(Urban2 Silver)[13] ─────────────────────────────────────────╮"
 "│NAME                   TYPE                FOLDER                                  GIT         DESCRIPTION  │"
